@@ -1,0 +1,8 @@
+﻿node_modules
+.vercel
+.env
+api/.env
+admin/.env
+mini/.env
+dist
+.DS_Store

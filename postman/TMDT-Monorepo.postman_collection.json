@@ -1,0 +1,129 @@
+{
+  "info": {
+    "name": "TMDT Monorepo",
+    "_postman_id": "ecom-a1abf56d",
+    "description": "Collection test API TM\u0110T (Mini/Admin/API)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": "{{api_url}}/health"
+      }
+    },
+    {
+      "name": "Auth Login",
+      "request": {
+        "method": "POST",
+        "url": "{{api_url}}/auth/login",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"email\": \"admin@demo.com\", \"password\": \"admin123\"}"
+        }
+      }
+    },
+    {
+      "name": "Products List",
+      "request": {
+        "method": "GET",
+        "url": "{{api_url}}/products"
+      }
+    },
+    {
+      "name": "Create Cart",
+      "request": {
+        "method": "POST",
+        "url": "{{api_url}}/cart"
+      }
+    },
+    {
+      "name": "Add Item to Cart",
+      "request": {
+        "method": "POST",
+        "url": "{{api_url}}/cart/{{cartId}}/items",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"productId\": 1, \"qty\": 2}"
+        }
+      }
+    },
+    {
+      "name": "Get Cart",
+      "request": {
+        "method": "GET",
+        "url": "{{api_url}}/cart/{{cartId}}"
+      }
+    },
+    {
+      "name": "Checkout",
+      "request": {
+        "method": "POST",
+        "url": "{{api_url}}/checkout",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"cartId\": \"{{cartId}}\", \"name\": \"Khach hang\", \"phone\": \"0900000000\", \"address\": \"TP.HCM\"}"
+        }
+      }
+    },
+    {
+      "name": "Webhook ZaloPay (mock)",
+      "request": {
+        "method": "POST",
+        "url": "{{api_url}}/webhooks/zalopay",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"event\": \"payment.success\", \"orderId\": 123}"
+        }
+      }
+    },
+    {
+      "name": "Webhook Shipping (mock)",
+      "request": {
+        "method": "POST",
+        "url": "{{api_url}}/webhooks/shipping",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"event\": \"ghn.order.updated\", \"orderId\": 123, \"status\": \"picked\"}"
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "api_url",
+      "value": "http://localhost:3000/api"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "tmdt-monorepo",
+  "private": true,
+  "workspaces": [
+    "mini",
+    "admin",
+    "api"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "fmt": "prettier -w . || true",
+    "lint": "echo \"lint placeholder\""
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3"
+  }
+}
