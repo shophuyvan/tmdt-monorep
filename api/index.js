@@ -51,6 +51,15 @@ function safeInt(v, def = 0) {
   return Number.isFinite(n) ? n : def;
 }
 
+// ====== Root (để vào / không 404) ======
+app.get('/', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'tmdt-api',
+    routes: ['/api/health', '/api/products', '/api/auth/login', '/api/cart', '/api/checkout']
+  });
+});
+
 // ====== Routes ======
 
 // Health
@@ -69,12 +78,11 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Fallback demo
     if (!user && email === 'admin@demo.com') {
-      // tạo user demo nếu chưa có
       const hash = await bcrypt.hash('admin123', 10);
       user = await prisma.user.upsert({
         where: { email },
         create: { email, password: hash, name: 'Admin', role: 'admin' },
-        update: {},
+        update: {}
       });
     }
 
@@ -94,9 +102,7 @@ app.post('/api/auth/login', async (req, res) => {
 // Products
 app.get('/api/products', async (req, res) => {
   try {
-    const list = await prisma.product.findMany({
-      orderBy: { createdAt: 'desc' },
-    });
+    const list = await prisma.product.findMany({ orderBy: { createdAt: 'desc' } });
     res.json({ ok: true, items: list });
   } catch (e) {
     console.error('PRODUCTS_ERR', e);
@@ -121,7 +127,7 @@ app.get('/api/cart/:cid', async (req, res) => {
     const cartId = req.params.cid;
     const cart = await prisma.cart.findUnique({
       where: { id: cartId },
-      include: { items: { include: { product: true } } },
+      include: { items: { include: { product: true } } }
     });
     if (!cart) return res.status(404).json({ ok: false, error: 'CART_NOT_FOUND' });
     res.json({ ok: true, cart });
@@ -138,27 +144,23 @@ app.post('/api/cart/:cid/items', async (req, res) => {
     const { productId, qty } = req.body || {};
     const quantity = Math.max(1, safeInt(qty, 1));
 
-    // ensure cart exists
     const cart = await prisma.cart.findUnique({ where: { id: cartId } });
     if (!cart) return res.status(404).json({ ok: false, error: 'CART_NOT_FOUND' });
 
-    // upsert item
     const existing = await prisma.cartItem.findFirst({ where: { cartId, productId } });
 
     if (existing) {
       await prisma.cartItem.update({
         where: { id: existing.id },
-        data: { qty: existing.qty + quantity },
+        data: { qty: existing.qty + quantity }
       });
     } else {
-      await prisma.cartItem.create({
-        data: { cartId, productId, qty: quantity },
-      });
+      await prisma.cartItem.create({ data: { cartId, productId, qty: quantity } });
     }
 
     const updated = await prisma.cart.findUnique({
       where: { id: cartId },
-      include: { items: { include: { product: true } } },
+      include: { items: { include: { product: true } } }
     });
 
     res.json({ ok: true, cart: updated });
@@ -176,11 +178,10 @@ app.post('/api/checkout', async (req, res) => {
 
     const cart = await prisma.cart.findUnique({
       where: { id: cartId },
-      include: { items: { include: { product: true } } },
+      include: { items: { include: { product: true } } }
     });
     if (!cart) return res.status(404).json({ ok: false, error: 'CART_NOT_FOUND' });
 
-    // tạo order đơn giản
     const order = await prisma.order.create({
       data: {
         name: name || 'Khách',
@@ -190,16 +191,15 @@ app.post('/api/checkout', async (req, res) => {
           create: cart.items.map(it => ({
             productId: it.productId,
             qty: it.qty,
-            price: it.product.price || 0,
-          })),
+            price: it.product.price || 0
+          }))
         },
         cartId,
-        status: 'PENDING',
+        status: 'PENDING'
       },
-      include: { items: true },
+      include: { items: true }
     });
 
-    // mock payment url
     const payment_url = `https://example.com/pay?order=${order.id}`;
     res.json({ ok: true, orderId: order.id, payment_url });
   } catch (e) {
