@@ -11,7 +11,11 @@ model AdminUser {
   id        Int      @id @default(autoincrement())
   email     String   @unique
   password  String
+  role      String   @default("ADMIN")
   createdAt DateTime @default(now())
+
+  refreshTokens RefreshToken[]
+  passwordResets PasswordReset[]
 }
 
 model Product {
@@ -64,4 +68,34 @@ model OrderItem {
 
   order   Order   @relation(fields: [orderId], references: [id])
   product Product @relation(fields: [productId], references: [id])
+}
+
+
+model RefreshToken {
+  id         Int       @id @default(autoincrement())
+  jti        String    @unique
+  userId     Int
+  user       AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String
+  userAgent  String?
+  ip         String?
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordReset {
+  id         Int       @id @default(autoincrement())
+  userId     Int
+  user       AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
 }
