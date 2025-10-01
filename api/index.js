@@ -278,8 +278,8 @@ app.post('/api/auth/reset', async (req,res)=>{
     if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok:false, message:'Invalid code' });
     const hashed = await bcrypt.hash(newPassword, 10);
     await prisma.$transaction([
-      prisma.adminUser.update({ where:{ id:user.id }, data:{ password: hashed } }),
-      prisma.passwordReset.update({ where:{ id: rec.id }, data:{ consumedAt: new Date() } }),
+      prisma.adminUser.update({ where:{ id:user.id }, data:{ password: hashed } });
+      prisma.passwordReset.update({ where:{ id: rec.id }, data:{ consumedAt: new Date() } });
       prisma.refreshToken.updateMany({ where:{ userId: user.id, revokedAt: null }, data:{ revokedAt: new Date() } })
     ]);
     res.clearCookie('rt', { path:'/api/auth' });
