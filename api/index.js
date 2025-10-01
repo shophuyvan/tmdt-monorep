@@ -266,7 +266,7 @@ app.post('/api/auth/reset', async (req,res)=>{
     const hashed = await bcrypt.hash(newPassword, 10);
     await prisma.$transaction([
       prisma.adminUser.update({ where:{ id:user.id }, data:{ password: hashed } }),
-      prisma.passwordReset.update({ where:{ id: rec.id }, data:{ consumedAt: new Date() }),
+      prisma.passwordReset.update({ where:{ id: rec.id }, data:{ consumedAt: new Date() } }),
       prisma.refreshToken.updateMany({ where:{ userId: user.id, revokedAt: null }, data:{ revokedAt: new Date() } })
     ]);
     res.clearCookie('rt', { path:'/api/auth' });
