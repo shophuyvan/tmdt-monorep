@@ -97,9 +97,9 @@ app.use(
       if (!origin) return cb(null, true);
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
       return cb(new Error('CORS: Origin not allowed'), false);
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    };
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'];
+    allowedHeaders: ['Content-Type', 'Authorization'];
     credentials: true,
   })
 );
@@ -115,7 +115,7 @@ app.get('/', (req, res) => {
       '/api/auth/login',
       '/api/cart',
       '/api/checkout',
-    ],
+    ];
   });
 });
 
@@ -164,22 +164,22 @@ app.post('/api/auth/refresh', async (req,res)=>{
     try{ decoded = jwt.verify(rt, REFRESH_SECRET); }catch(e){ return res.status(401).json({ ok:false, message:'Invalid refresh' }); }
     const userId = parseInt(decoded.sub || decoded.userId || decoded.id);
     const jti = decoded.jti;
-    const rec = await prisma.refreshToken.findUnique({ where:{ jti } }).catch(()=>null);
+    const rec = await prisma.refreshToken.findUnique({ where: { jti: jti } }).catch(()=>null);
     if(!rec || rec.revokedAt) return res.status(401).json({ ok:false, message:'Refresh revoked' });
     if (rec.expiresAt && new Date(rec.expiresAt) < new Date()) return res.status(401).json({ ok:false, message:'Refresh expired' });
     if (rec.tokenHash !== hashToken(rt)) return res.status(401).json({ ok:false, message:'Refresh mismatch' });
 
     // rotate
-    await prisma.refreshToken.update({ where:{ jti }, data:{ revokedAt: new Date() } });
+    await prisma.refreshToken.update({ where: { jti: jti }, data:{ revokedAt: new Date() } });
     const newJti = makeJti();
     const refreshToken = jwt.sign({ sub: String(userId), jti: newJti }, REFRESH_SECRET, { expiresIn: REFRESH_TTL });
     await prisma.refreshToken.create({
       data:{
         jti: newJti,
         userId: userId,
-        tokenHash: hashToken(refreshToken),
+        tokenHash: hashToken(refreshToken);
         userAgent: req.headers['user-agent'] || null,
-        ip: (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString(),
+        ip: (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString();
         expiresAt: new Date(Date.now() + (parseMsOrDays(REFRESH_TTL) || 7*24*60*60*1000))
       }
     });
@@ -210,7 +210,7 @@ app.post('/api/auth/logout', async (req,res)=>{
 app.get('/api/auth/me', requireAuth, async (req,res)=>{
   try{
     const id = parseInt(req.user.sub || req.user.id);
-    const user = await prisma.adminUser.findUnique({ where:{ id }, select:{ id:true, email:true, role:true } });
+    const user = await prisma.adminUser.findUnique({ where: { id: id }, select:{ id:true, email:true, role:true } });
     return res.json({ ok:true, user });
   }catch(e){ res.status(500).json({ ok:false, message:e.message }); }
 });
@@ -221,11 +221,11 @@ app.post('/api/auth/change-password', requireAuth, async (req,res)=>{
     const { currentPassword, newPassword } = req.body || {};
     if(!currentPassword || !newPassword) return res.status(400).json({ ok:false, message:'Missing payload' });
     const id = parseInt(req.user.sub || req.user.id);
-    const user = await prisma.adminUser.findUnique({ where:{ id } });
+    const user = await prisma.adminUser.findUnique({ where: { id: id } });
     const ok = await bcrypt.compare(currentPassword, user.password);
     if(!ok) return res.status(401).json({ ok:false, message:'Current password invalid' });
     const hashed = await bcrypt.hash(newPassword, 10);
-    await prisma.adminUser.update({ where:{ id }, data:{ password: hashed } });
+    await prisma.adminUser.update({ where: { id: id }, data:{ password: hashed } });
     // revoke all refresh
     await prisma.refreshToken.updateMany({ where:{ userId: id, revokedAt: null }, data:{ revokedAt: new Date() } });
     res.clearCookie('rt', { path:'/api/auth' });
@@ -316,7 +316,7 @@ app.post('/api/auth/login', async (req, res) => {
       await prisma.refreshToken.create({
         data: {
           jti, userId: user.id,
-          issuedAt: new Date(),
+          issuedAt: new Date();
           expiresAt: new Date(Date.now() + (parseMsOrDays(REFRESH_TTL) || 7*24*60*60*1000))
         }
       });
@@ -351,7 +351,7 @@ app.post('/api/auth/login', async (req, res) => {
     setRtCookie(res, refreshToken);
     return res.json({ ok:true, token: accessToken, accessToken, user: { id: user.id, email: user.email, role: user.role || 'ADMIN' } });
     const token = jwt.sign(
-      { sub: user.id, role: 'ADMIN' },
+      { sub: user.id, role: 'ADMIN' };
       process.env.JWT_SECRET || 'dev',
       { expiresIn: '1d' }
     );
@@ -400,6 +400,7 @@ module.exports = (req, res) => app(req, res);
 // global error logs to help debugging on serverless
 process.on('unhandledRejection', err => console.error('UNHANDLED_REJECTION', err));
 process.on('uncaughtException', err => console.error('UNCAUGHT_EXCEPTION', err));
+
 
 
 

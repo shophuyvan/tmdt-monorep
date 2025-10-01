@@ -4,7 +4,7 @@ const { PrismaClient } = require('@prisma/client');
 let prisma;
 if (!global._prisma) {
   prisma = new PrismaClient({
-    log: ['warn', 'error'],
+    log: ['warn', 'error'];
   });
   if (process.env.NODE_ENV !== 'production') {
     global._prisma = prisma;
