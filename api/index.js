@@ -72,31 +72,27 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ ok: false, message: 'Missing payload' });
     }
 
-    // Nếu không có delegate => Prisma chưa generate
-    if (!(prisma.adminUser && prisma.adminUser.findUnique)) {
-      return res.status(500).json({
-        ok: false,
-        message:
-          'Prisma Client has no model delegates. Please ensure `npx prisma generate` runs during build.',
-      });
+    // Lấy admin user bằng delegate nếu có, nếu không fallback $queryRaw
+    let user;
+    const hasDelegate = prisma.adminUser && typeof prisma.adminUser.findUnique === 'function';
+    if (hasDelegate) {
+      user = await prisma.adminUser.findUnique({ where: { email } });
+    } else {
+      const rows = await prisma.$queryRaw`SELECT id, email, password FROM "AdminUser" WHERE email = ${email} LIMIT 1`;
+      user = rows && rows[0] ? rows[0] : null;
     }
 
-    const user = await prisma.adminUser.findUnique({ where: { email } });
     if (!user) {
-      return res
-        .status(401)
-        .json({ ok: false, message: 'Email/password invalid' });
+      return res.status(401).json({ ok: false, message: 'Email/password invalid' });
     }
 
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) {
-      return res
-        .status(401)
-        .json({ ok: false, message: 'Email/password invalid' });
+      return res.status(401).json({ ok: false, message: 'Email/password invalid' });
     }
 
     const token = jwt.sign(
-      { sub: user.id, role: user.role },
+      { sub: user.id, role: 'ADMIN' },
       process.env.JWT_SECRET || 'dev',
       { expiresIn: '1d' }
     );
