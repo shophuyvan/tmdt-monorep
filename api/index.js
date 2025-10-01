@@ -264,6 +264,19 @@ app.post('/api/auth/reset', async (req,res)=>{
     if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok:false, message:'Code expired' });
     if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok:false, message:'Invalid code' });
     const hashed = await bcrypt.hash(newPassword, 10);
+    await prisma.adminUser.update({ where:{ id:user.id }, data:{ password: hashed } });
+    await prisma.passwordReset.update({ where:{ id: rec.id }, data:{ consumedAt: new Date() } });
+    await prisma.refreshToken.updateMany({ where:{ userId: user.id, revokedAt: null }, data:{ revokedAt: new Date() } });
+    res.clearCookie('rt', { path:'/api/auth' });
+    return res.json({ ok:true });
+  }catch(e){ console.error('RESET_ERR', e); res.status(500).json({ ok:false, message:e.message }); }
+});const user = await prisma.adminUser.findUnique({ where:{ email } });
+    if(!user) return res.status(400).json({ ok:false, message:'Invalid' });
+    const rec = await prisma.passwordReset.findFirst({ where:{ userId: user.id, consumedAt: null }, orderBy:{ createdAt:'desc' } });
+    if(!rec) return res.status(400).json({ ok:false, message:'Invalid code' });
+    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok:false, message:'Code expired' });
+    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok:false, message:'Invalid code' });
+    const hashed = await bcrypt.hash(newPassword, 10);
     await prisma.$transaction([
       prisma.adminUser.update({ where:{ id:user.id }, data:{ password: hashed } }),
       prisma.passwordReset.update({ where:{ id: rec.id }, data:{ consumedAt: new Date() } }),
@@ -352,3 +365,7 @@ app.get('/api/products', async (req, res) => {
     return res.status(500).json({ ok: false, message: e.message });
   }
 });
+
+// global error logs to help debugging on serverless
+process.on('unhandledRejection', err => console.error('UNHANDLED_REJECTION', err));
+process.on('uncaughtException', err => console.error('UNCAUGHT_EXCEPTION', err));
