@@ -16,6 +16,7 @@ model AdminUser {
 
   refreshTokens RefreshToken[]
   passwordResets PasswordReset[]
+  role Role @default(USER)
 }
 
 model Product {
@@ -99,3 +100,10 @@ model PasswordReset {
   @@index([userId])
   @@index([expiresAt])
 }
+
+
+enum Role {
+  ADMIN
+  USER
+}
+

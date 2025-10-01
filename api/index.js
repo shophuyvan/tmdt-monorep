@@ -290,7 +290,33 @@ app.post('/api/auth/reset', async (req,res)=>{
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = (req.body || {});
-    if (!email || !password) return res.status(400).json({ ok:false, message:'Missing payload' });
+    if (!email || !password) {
+      return res.status(400).json({ ok:false, message:'Missing payload' });
+    }
+    const user = await prisma.adminUser.findUnique({ where: { email } });
+    if (!user) return res.status(401).json({ ok:false, message:'Invalid email or password' });
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) return res.status(401).json({ ok:false, message:'Invalid email or password' });
+    const accessToken = signAccess(user);
+    const jti = makeJti();
+    const refreshToken = jwt.sign({ sub: String(user.id), jti }, REFRESH_SECRET, { expiresIn: REFRESH_TTL });
+    try {
+      await prisma.refreshToken.create({
+        data: {
+          jti, userId: user.id,
+          issuedAt: new Date(),
+          expiresAt: new Date(Date.now() + (parseMsOrDays(REFRESH_TTL) || 7*24*60*60*1000))
+        }
+      });
+    } catch (_e) { /* ignore */ }
+    setRtCookie(res, refreshToken);
+    return res.json({ ok:true, accessToken, user: { id: user.id, email: user.email, role: user.role } });
+  } catch (e) {
+    console.error('LOGIN_ERR', e);
+    return res.status(500).json({ ok:false, message:'Internal error' });
+  }
+});
+if (!email || !password) return res.status(400).json({ ok:false, message:'Missing payload' });
 
     let user = null;
     try {
