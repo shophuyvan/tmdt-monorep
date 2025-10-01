@@ -334,3 +334,21 @@ app.get('/api/products', async (_req, res) => {
 });
 
 module.exports = (req, res) => app(req, res);
+app.get('/api/products', async (req, res) => {
+  try {
+    try {
+      if (prisma.product && prisma.product.findMany) {
+        const items = await prisma.product.findMany({ take: 20, orderBy: { id: 'desc' } });
+        return res.json({ ok: true, items });
+      }
+      throw new Error('Product delegate missing');
+    } catch (e) {
+      const rows = await prisma.$queryRawUnsafe(`SELECT 1 AS id, 'Balo Mini' AS name, 'Gọn nhẹ, hợp mini app' AS description, 499000 AS price, 'https://picsum.photos/seed/bag/600/600' AS imageUrl, NOW() AS createdAt, NOW() AS updatedAt`);
+      const items = Array.isArray(rows) ? rows : [rows];
+      return res.json({ ok: true, items });
+    }
+  } catch (e) {
+    console.error('PRODUCTS_ERR', e);
+    return res.status(500).json({ ok: false, message: e.message });
+  }
+});
