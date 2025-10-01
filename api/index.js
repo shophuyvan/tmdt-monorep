@@ -87,8 +87,7 @@ async function rawQuery(sql, params=[]) {
 // CHá»ˆNH domain theo cá»§a báº¡n náº¿u khÃ¡c
 const ALLOWED_ORIGINS = [
   'https://tmdt-mini.pages.dev',
-  'https://tmdt-admin.pages.dev',
-];
+  'https://tmdt-admin.pages.dev'];
 
 app.use(
   cors({
@@ -97,11 +96,10 @@ app.use(
       if (!origin) return cb(null, true);
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
       return cb(new Error('CORS: Origin not allowed'), false);
-    };
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'];
-    allowedHeaders: ['Content-Type', 'Authorization'];
-    credentials: true,
-  })
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedallowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true})
 );
 
 // Trang chá»§ â€“ liá»‡t kÃª route
@@ -114,8 +112,7 @@ app.get('/', (req, res) => {
       '/api/products',
       '/api/auth/login',
       '/api/cart',
-      '/api/checkout',
-    ];
+      '/api/checkout'];
   });
 });
 
@@ -400,6 +397,8 @@ module.exports = (req, res) => app(req, res);
 // global error logs to help debugging on serverless
 process.on('unhandledRejection', err => console.error('UNHANDLED_REJECTION', err));
 process.on('uncaughtException', err => console.error('UNCAUGHT_EXCEPTION', err));
+
+
 
 
 
