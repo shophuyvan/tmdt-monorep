@@ -289,10 +289,46 @@ app.post('/api/auth/reset', async (req,res)=>{
 // Login
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    if (!email || !password) {
-      return res.status(400).json({ ok: false, message: 'Missing payload' });
+    const { email, password } = (req.body || {});
+    if (!email || !password) return res.status(400).json({ ok:false, message:'Missing payload' });
+
+    let user = null;
+    try {
+      user = await prisma.adminUser.findUnique({ where: { email } });
+    } catch (e) {
+      // schema drift: column not exist
+      if (String(e.message || '').includes('does not exist')) {
+        const rows = await rawQuery('SELECT id, email, password FROM "AdminUser" WHERE email = $1 LIMIT 1', [email]);
+        user = rows && rows[0] ? rows[0] : null;
+      } else {
+        throw e;
+      }
     }
+
+    if (!user) return res.status(401).json({ ok:false, message:'Invalid email or password' });
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) return res.status(401).json({ ok:false, message:'Invalid email or password' });
+
+    const accessToken = signAccess(user);
+    const jti = makeJti();
+    const refreshToken = jwt.sign({ sub: String(user.id), jti }, REFRESH_SECRET, { expiresIn: REFRESH_TTL });
+    try {
+      await prisma.refreshToken.create({
+        data: {
+          jti, userId: user.id,
+          issuedAt: new Date(),
+          expiresAt: new Date(Date.now() + (parseMsOrDays(REFRESH_TTL) || 7*24*60*60*1000))
+        }
+      });
+    } catch (_) {}
+    setRtCookie(res, refreshToken);
+
+    return res.json({ ok:true, accessToken, user: { id: user.id, email: user.email, role: user.role || 'ADMIN' } });
+  } catch (e) {
+    console.error('LOGIN_ERR', e);
+    return res.status(500).json({ ok:false, message: e.message });
+  }
+});}
 
     let user = null;
     if (prisma.adminUser && typeof prisma.adminUser.findUnique === 'function') {
