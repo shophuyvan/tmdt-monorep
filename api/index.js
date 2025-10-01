@@ -111,9 +111,18 @@ app.post('/api/auth/login', async (req, res) => {
 // Products mẫu – nếu bạn đã có rồi thì giữ code của bạn
 app.get('/api/products', async (_req, res) => {
   try {
-    const items = await prisma.product.findMany({
-      orderBy: { createdAt: 'desc' },
-    });
+    let items;
+    if (prisma.product && typeof prisma.product.findMany === 'function') {
+      items = await prisma.product.findMany({ orderBy: { createdAt: 'desc' } });
+    } else {
+      // Fallback nếu Prisma Client chưa generate delegates khi build trên Vercel
+      items = await prisma.$queryRaw`
+        SELECT id, name, description, price, "imageUrl", "createdAt"
+        FROM "Product"
+        ORDER BY "createdAt" DESC
+        LIMIT 100
+      `;
+    }
     res.json({ ok: true, items });
   } catch (e) {
     console.error('PRODUCTS_ERR', e);
