@@ -383,11 +383,6 @@ app.get('/api/products', async (_req, res) => {
 });
 
 module.exports = (req, res) => app(req, res);
-app.get('/api/products', async (req, res) => {
-  try {
-    try {
-      if (prisma.product && prisma.product.findMany) {
-        const items = await prisma.product.findMany({ take: 20, orderBy: { id: 'desc' } });
         return res.json({ ok: true, items });
       }
       throw new Error('Product delegate missing');
