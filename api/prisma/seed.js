@@ -1,4 +1,4 @@
-
+﻿
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
 const prisma = new PrismaClient();
@@ -14,9 +14,9 @@ async function main() {
   });
 
   const productsData = [
-    { name: 'Áo thun Zalo Vibes', description: 'Áo thun mềm mịn', price: 199000, imageUrl: 'https://picsum.photos/seed/tee/600/600' },
-    { name: 'Ly giữ nhiệt', description: 'Giữ nhiệt 8 giờ', price: 259000, imageUrl: 'https://picsum.photos/seed/cup/600/600' },
-    { name: 'Balo Mini', description: 'Gọn nhẹ, hợp mini app', price: 499000, imageUrl: 'https://picsum.photos/seed/bag/600/600' },
+    { name: 'Ão thun Zalo Vibes', description: 'Ão thun má»m má»‹n', price: 199000, imageUrl: 'https://picsum.photos/seed/tee/600/600' },
+    { name: 'Ly giá»¯ nhiá»‡t', description: 'Giá»¯ nhiá»‡t 8 giá»', price: 259000, imageUrl: 'https://picsum.photos/seed/cup/600/600' },
+    { name: 'Balo Mini', description: 'Gá»n nháº¹, há»£p mini app', price: 499000, imageUrl: 'https://picsum.photos/seed/bag/600/600' },
   ];
   for (const p of productsData) {
     await prisma.product.create({ data: p });
@@ -25,3 +25,5 @@ async function main() {
 }
 
 main().catch(e => { console.error(e); process.exit(1); }).finally(async () => prisma.$disconnect());
+
+

@@ -1,4 +1,4 @@
-// api/index.js
+﻿// api/index.js
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -84,7 +84,7 @@ async function rawQuery(sql, params=[]) {
   return null;
 }
 
-// CHỈNH domain theo của bạn nếu khác
+// CHá»ˆNH domain theo cá»§a báº¡n náº¿u khÃ¡c
 const ALLOWED_ORIGINS = [
   'https://tmdt-mini.pages.dev',
   'https://tmdt-admin.pages.dev',
@@ -93,7 +93,7 @@ const ALLOWED_ORIGINS = [
 app.use(
   cors({
     origin(origin, cb) {
-      // Cho phép cả request không có origin (Postman, curl)
+      // Cho phÃ©p cáº£ request khÃ´ng cÃ³ origin (Postman, curl)
       if (!origin) return cb(null, true);
       if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
       return cb(new Error('CORS: Origin not allowed'), false);
@@ -104,7 +104,7 @@ app.use(
   })
 );
 
-// Trang chủ – liệt kê route
+// Trang chá»§ â€“ liá»‡t kÃª route
 app.get('/', (req, res) => {
   res.json({
     ok: true,
@@ -130,7 +130,7 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
-// DEBUG: xem Prisma có model user chưa
+// DEBUG: xem Prisma cÃ³ model user chÆ°a
 app.get('/__introspect', (_req, res) => {
   const hasUser =
     prisma && prisma.adminUser && typeof prisma.adminUser.findUnique === 'function';
@@ -147,7 +147,7 @@ app.post('/api/auth/register', async (req,res)=>{
   try{
     const { email, password } = req.body || {};
     if(!email || !password) return res.status(400).json({ ok:false, message:'Missing payload' });
-    const existed = await prisma.adminUser.findUnique({ where:{ email }});
+    const existed = await prisma.adminUser.findUnique({ where: { email: email }});
     if (existed) return res.status(409).json({ ok:false, message:'Email exists' });
     const hashed = await bcrypt.hash(password, 10);
     const user = await prisma.adminUser.create({ data:{ email, password: hashed, role: 'USER' } });
@@ -238,8 +238,8 @@ app.post('/api/auth/forgot', async (req,res)=>{
   try{
     const { email } = req.body || {};
     if(!email) return res.status(400).json({ ok:false, message:'Missing email' });
-    const user = await prisma.adminUser.findUnique({ where:{ email } });
-    if(!user) return res.json({ ok:true }); // tránh lộ thông tin
+    const user = await prisma.adminUser.findUnique({ where: { email: email } });
+    if(!user) return res.json({ ok:true }); // trÃ¡nh lá»™ thÃ´ng tin
     // remove old OTP
     await prisma.passwordReset.deleteMany({ where:{ userId: user.id } }).catch(()=>{});
     const code = String(Math.floor(100000 + Math.random()*900000));
@@ -257,7 +257,7 @@ app.post('/api/auth/reset', async (req,res)=>{
   try{
     const { email, code, newPassword } = req.body || {};
     if(!email || !code || !newPassword) return res.status(400).json({ ok:false, message:'Missing payload' });
-    const user = await prisma.adminUser.findUnique({ where:{ email } });
+    const user = await prisma.adminUser.findUnique({ where: { email: email } });
     if(!user) return res.status(400).json({ ok:false, message:'Invalid' });
     const rec = await prisma.passwordReset.findFirst({ where:{ userId: user.id, consumedAt: null }, orderBy:{ createdAt:'desc' } });
     if(!rec) return res.status(400).json({ ok:false, message:'Invalid code' });
@@ -270,7 +270,7 @@ app.post('/api/auth/reset', async (req,res)=>{
     res.clearCookie('rt', { path:'/api/auth' });
     return res.json({ ok:true });
   }catch(e){ console.error('RESET_ERR', e); res.status(500).json({ ok:false, message:e.message }); }
-});const user = await prisma.adminUser.findUnique({ where:{ email } });
+});const user = await prisma.adminUser.findUnique({ where: { email: email } });
     if(!user) return res.status(400).json({ ok:false, message:'Invalid' });
     const rec = await prisma.passwordReset.findFirst({ where:{ userId: user.id, consumedAt: null }, orderBy:{ createdAt:'desc' } });
     if(!rec) return res.status(400).json({ ok:false, message:'Invalid code' });
@@ -294,7 +294,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     let user = null;
     try {
-      user = await prisma.adminUser.findUnique({ where: { email } });
+      user = await prisma.adminUser.findUnique({ where: { email: email } });
     } catch (e) {
       // schema drift: column not exist
       if (String(e.message || '').includes('does not exist')) {
@@ -332,7 +332,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     let user = null;
     if (prisma.adminUser && typeof prisma.adminUser.findUnique === 'function') {
-      user = await prisma.adminUser.findUnique({ where: { email } });
+      user = await prisma.adminUser.findUnique({ where: { email: email } });
     } else {
       const rows = await rawQuery(`SELECT id, email, password FROM "AdminUser" WHERE email = '${email}' LIMIT 1`);
       user = rows && rows[0] ? rows[0] : null;
@@ -362,7 +362,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Products mẫu – nếu bạn đã có rồi thì giữ code của bạn
+// Products máº«u â€“ náº¿u báº¡n Ä‘Ã£ cÃ³ rá»“i thÃ¬ giá»¯ code cá»§a báº¡n
 app.get('/api/products', async (_req, res) => {
   try {
     if (prisma.product && typeof prisma.product.findMany === 'function') {
@@ -387,7 +387,7 @@ module.exports = (req, res) => app(req, res);
       }
       throw new Error('Product delegate missing');
     } catch (e) {
-      const rows = await prisma.$queryRawUnsafe(`SELECT 1 AS id, 'Balo Mini' AS name, 'Gọn nhẹ, hợp mini app' AS description, 499000 AS price, 'https://picsum.photos/seed/bag/600/600' AS imageUrl, NOW() AS createdAt, NOW() AS updatedAt`);
+      const rows = await prisma.$queryRawUnsafe(`SELECT 1 AS id, 'Balo Mini' AS name, 'Gá»n nháº¹, há»£p mini app' AS description, 499000 AS price, 'https://picsum.photos/seed/bag/600/600' AS imageUrl, NOW() AS createdAt, NOW() AS updatedAt`);
       const items = Array.isArray(rows) ? rows : [rows];
       return res.json({ ok: true, items });
     }
@@ -400,3 +400,6 @@ module.exports = (req, res) => app(req, res);
 // global error logs to help debugging on serverless
 process.on('unhandledRejection', err => console.error('UNHANDLED_REJECTION', err));
 process.on('uncaughtException', err => console.error('UNCAUGHT_EXCEPTION', err));
+
+
+

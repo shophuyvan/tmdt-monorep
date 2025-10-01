@@ -1,4 +1,4 @@
-// api/lib/prisma.js
+﻿// api/lib/prisma.js
 const { PrismaClient } = require('@prisma/client');
 
 let prisma;
@@ -14,3 +14,5 @@ if (!global._prisma) {
 }
 
 module.exports = prisma;
+
+
