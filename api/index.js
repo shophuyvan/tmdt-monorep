@@ -13,6 +13,18 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cookieParser());
 app.use(express.json());
+// ---- BOOTSTRAP DB (tolerate missing columns/tables) ----
+let __booted = false;
+async function __bootstrapOnce() {
+  if (__booted) return;
+  __booted = true;
+  try {
+    // Ensure Product.stock exists
+    await prisma.$executeRawUnsafe('ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS stock integer NOT NULL DEFAULT 0');
+  } catch (e) { console.error('BOOTSTRAP_ERR', e.message); }
+}
+app.use((req, _res, next) => { __bootstrapOnce().finally(() => next()); });
+
 // ---- OBSERVABILITY: Request ID + Rate Limit ----
 const { randomUUID } = require('crypto');
 
@@ -506,4 +518,6 @@ app.delete('/api/admin/products/:id', requireAuth, requireRole('ADMIN'), async (
   }
 });
 
-
+// ---- EXPORT FOR VERCEL ----
+module.exports = app;
+exports.default = app;
