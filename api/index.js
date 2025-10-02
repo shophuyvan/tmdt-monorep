@@ -90,6 +90,43 @@ async function rawQuery(sql, params = []) {
   return null;
 }
 
+/**
+ * Prisma sometimes throws conversion errors for column 'role' (enum/text drift).
+ * Fallback to raw SELECT with explicit CAST role::text.
+ */
+async function getUserByEmailSafe(email) {
+  try {
+    return await getUserByEmailSafe(email);
+  } catch (e) {
+    const msg = String(e && (e.message || e.code || e.name) || '');
+    if (msg.includes('Error converting field') || msg.includes('Invalid `prisma.adminUser.findUnique()`')) {
+      const rows = await rawQuery(
+        'SELECT id, email, password, COALESCE(role::text, \'USER\') AS role FROM "AdminUser" WHERE email = $1 LIMIT 1',
+        [email]
+      );
+      return rows && rows[0] ? rows[0] : null;
+    }
+    throw e;
+  }
+}
+
+async function getUserByIdSafe(id) {
+  try {
+    return await prisma.adminUser.findUnique({ where: { id: Number(id) } });
+  } catch (e) {
+    const msg = String(e && (e.message || e.code || e.name) || '');
+    if (msg.includes('Error converting field') || msg.includes('Invalid `prisma.adminUser.findUnique()`')) {
+      const rows = await rawQuery(
+        'SELECT id, email, COALESCE(role::text, \'USER\') AS role FROM "AdminUser" WHERE id = $1 LIMIT 1',
+        [Number(id)]
+      );
+      return rows && rows[0] ? rows[0] : null;
+    }
+    throw e;
+  }
+}
+
+
 // ---- CORS ----
 // CHỈNH domain nếu khác
 const ALLOWED_ORIGINS = [
@@ -170,7 +207,7 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ ok: false, message: 'Missing payload' });
-    const existed = await prisma.adminUser.findUnique({ where: { email } });
+    const existed = await getUserByEmailSafe(email);
     if (existed) return res.status(409).json({ ok: false, message: 'Email exists' });
     const hashed = await bcrypt.hash(password, 10);
     await prisma.adminUser.create({ data: { email, password: hashed, role: 'USER' } });
@@ -219,7 +256,7 @@ app.post('/api/auth/refresh', async (req, res) => {
     });
 
     setRtCookie(res, refreshToken);
-    const user = await prisma.adminUser.findUnique({ where: { id: userId } });
+    const user = await getUserByIdSafe(userId);
     const accessToken = signAccess(user);
     return res.json({ ok: true, accessToken });
   } catch (e) {
@@ -252,10 +289,7 @@ app.post('/api/auth/logout', async (req, res) => {
 app.get('/api/auth/me', requireAuth, async (req, res) => {
   try {
     const id = parseInt(req.user.sub || req.user.id);
-    const user = await prisma.adminUser.findUnique({
-      where: { id },
-      select: { id: true, email: true, role: true },
-    });
+    const user = await getUserByIdSafe(id);
     return res.json({ ok: true, user });
   } catch (e) {
     res.status(500).json({ ok: false, message: e.message });
@@ -269,7 +303,7 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
     if (!currentPassword || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
 
     const id = parseInt(req.user.sub || req.user.id);
-    const user = await prisma.adminUser.findUnique({ where: { id } });
+    const user = await getUserByIdSafe(id);
     const ok = await bcrypt.compare(currentPassword, user.password);
     if (!ok) return res.status(401).json({ ok: false, message: 'Current password invalid' });
 
@@ -303,7 +337,7 @@ app.post('/api/auth/password/set', async (req, res) => {
     const { email, code, newPassword } = req.body || {};
     if (!email || !code || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
 
-    const user = await prisma.adminUser.findUnique({ where: { email } });
+    const user = await getUserByEmailSafe(email);
     if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
 
     const rec = await prisma.passwordReset.findFirst({
@@ -329,7 +363,7 @@ app.post('/api/auth/password/set', async (req, res) => {
   }
 });
 
-    const user = await prisma.adminUser.findUnique({ where: { email } });
+    const user = await getUserByEmailSafe(email);
     if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
     const rec = await prisma.passwordReset.findFirst({
       where: { userId: user.id, consumedAt: null },
@@ -345,7 +379,7 @@ app.post('/api/auth/password/set', async (req, res) => {
   }
 });
 
-    const user = await prisma.adminUser.findUnique({ where: { email } });
+    const user = await getUserByEmailSafe(email);
     if (!user) return res.json({ ok: true }); // tránh lộ thông tin
 
     await prisma.passwordReset.deleteMany({ where: { userId: user.id } }).catch(() => {});
@@ -368,7 +402,7 @@ app.post('/api/auth/reset', async (req, res) => {
     const { email, code, newPassword } = req.body || {};
     if (!email || !code || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
 
-    const user = await prisma.adminUser.findUnique({ where: { email } });
+    const user = await getUserByEmailSafe(email);
     if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
 
     const rec = await prisma.passwordReset.findFirst({
@@ -402,7 +436,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     let user = null;
     try {
-      user = await prisma.adminUser.findUnique({ where: { email } });
+      user = await getUserByEmailSafe(email);
     } catch (e) {
       // schema drift: column not exist
       if (String(e.message || '').includes('does not exist')) {
