@@ -482,19 +482,15 @@ app.post('/api/admin/products', requireAuth, requireRole('ADMIN','STAFF'), async
   try {
     const { name, price, description, imageUrl, stock } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: 'Missing name' });
-    const data = { name, price: Number(price)||0, description: description??null, imageUrl: imageUrl??null };
+    const data = { name, price: Number(price)||0 };
+    if (description !== undefined) data.description = description;
+    if (imageUrl !== undefined) data.imageUrl = imageUrl;
     if (typeof stock !== 'undefined') data.stock = Number(stock)||0;
     const created = await prisma.product.create({ data });
-    res.status(201).json({ ok: true, product: created });
+    return res.status(201).json({ ok: true, product: created });
   } catch (e) {
     console.error('ADMIN_CREATE_PRODUCT_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-    res.status(201).json({ ok: true, product: created });
-  } catch (e) {
-    console.error('ADMIN_PRODUCT_CREATE_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
+    return res.status(500).json({ ok: false, message: e.message });
   }
 });
 
