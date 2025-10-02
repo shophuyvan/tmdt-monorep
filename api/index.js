@@ -115,20 +115,21 @@ function requireRole(...roles) {
 // ---- RAW QUERY HELPER (handles missing delegates) ----
 async function rawQuery(sql, params = []) {
   try {
-    if (typeof prisma.$queryRawUnsafe === 'function') {
-      // support placeholders $1, $2 ... (Neon/PG)
-      if (Array.isArray(params) && params.length) {
-        // prisma.$queryRawUnsafe(sql, ...params) (Prisma >=5) – fallback: manual replace
-        return await prisma.$queryRawUnsafe(
-          sql.replace(/\$(\d+)/g, (_, i) => params[Number(i) - 1])
-        );
-      }
-      return await prisma.$queryRawUnsafe(sql);
+    if (Array.isArray(params) && params.length) {
+      const esc = (v) => {
+        if (v === null || v === undefined) return 'NULL';
+        if (typeof v === 'number' || typeof v === 'bigint') return String(v);
+        if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+        return '\'' + String(v).replace(/'/g, "''") + '\'';
+      };
+      const final = sql.replace(/\$(\d+)/g, (_, i) => esc(params[Number(i) - 1]));
+      return prisma.$queryRawUnsafe(final);
     }
+    return prisma.$queryRawUnsafe(sql);
   } catch (e) {
     console.error('RAW_QUERY_ERR', e);
+    return null;
   }
-  return null;
 }
 
 /**
@@ -518,6 +519,26 @@ app.delete('/api/admin/products/:id', requireAuth, requireRole('ADMIN'), async (
   }
 });
 
+
+// ---- PRODUCTS (with short cache) ----
+const __productsCache = { data: null, ts: 0, ttl: 15_000 };
+
+app.get('/api/products', async (_req, res) => {
+  try {
+    const now = Date.now();
+    if (__productsCache.data && now - __productsCache.ts < __productsCache.ttl) {
+      res.setHeader('Cache-Control', 'public, max-age=15');
+      return res.json({ ok: true, data: __productsCache.data, cached: true });
+    }
+    const rows = await prisma.product.findMany({ orderBy: { id: 'asc' } });
+    __productsCache.data = rows; __productsCache.ts = now;
+    res.setHeader('Cache-Control', 'public, max-age=15');
+    return res.json({ ok: true, data: rows });
+  } catch (e) {
+    console.error('PRODUCTS_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
 // ---- EXPORT FOR VERCEL ----
 module.exports = app;
 exports.default = app;
