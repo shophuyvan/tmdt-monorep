@@ -13,6 +13,35 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cookieParser());
 app.use(express.json());
+// ---- OBSERVABILITY: Request ID + Rate Limit ----
+const { randomUUID } = require('crypto');
+
+// Simple in-memory token bucket per IP+path (serverless instance-local)
+const RATE = { windowMs: 60_000, limit: 60 }; // 60 req/min per endpoint
+const __buckets = new Map();
+
+app.use((req, res, next) => {
+  // request id
+  const rid = req.headers['x-request-id'] || randomUUID();
+  req.rid = rid;
+  res.setHeader('x-request-id', rid);
+
+  // rate limit
+  try {
+    const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').toString().split(',')[0].trim();
+    const key = ip + '|' + req.method + '|' + req.path;
+    const now = Date.now();
+    let b = __buckets.get(key);
+    if (!b || now - b.ts > RATE.windowMs) { b = { ts: now, count: 0 }; }
+    b.count += 1;
+    __buckets.set(key, b);
+    if (b.count > RATE.limit) {
+      return res.status(429).json({ ok: false, message: 'Rate limit exceeded' });
+    }
+  } catch (e) { /* ignore */ }
+  next();
+});
+
 
 const ACCESS_TTL = process.env.ACCESS_TTL || '15m';
 const REFRESH_TTL = process.env.REFRESH_TTL || '7d';
@@ -425,7 +454,7 @@ app.get('/api/admin/users', requireAuth, requireRole('ADMIN','STAFF'), async (_r
     try {
       rows = await prisma.adminUser.findMany({ select: { id: true, email: true, role: true, createdAt: true }, orderBy: { id: 'asc' } });
     } catch (e) {
-      rows = await rawQuery('SELECT id, email, COALESCE(role::text, ''USER'') AS role, "createdAt" FROM "AdminUser" ORDER BY id ASC');
+      rows = await rawQuery(`SELECT id, email, COALESCE(role::text, 'USER') AS role, \"createdAt\" FROM \"AdminUser\" ORDER BY id ASC`);
     }
     res.json({ ok: true, users: rows });
   } catch (e) {
