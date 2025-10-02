@@ -12,7 +12,7 @@ const app = express();
 // ---- APP CONFIG - AUTH ----
 app.set('trust proxy', 1);
 app.use(cookieParser());
-app.use(express.json());
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf } }));
 // ---- BOOTSTRAP DB (tolerate missing columns/tables) ----
 let __booted = false;
 async function __bootstrapOnce() {
@@ -480,10 +480,17 @@ app.get('/api/admin/users', requireAuth, requireRole('ADMIN','STAFF'), async (_r
 // Admin-only: CRUD products
 app.post('/api/admin/products', requireAuth, requireRole('ADMIN','STAFF'), async (req, res) => {
   try {
-    const { name, price, description, imageUrl } = req.body || {};
+    const { name, price, description, imageUrl, stock } = req.body || {};
     if (!name) return res.status(400).json({ ok: false, message: 'Missing name' });
-    const data = { name, price: Number(price)||0, description: description||null, imageUrl: imageUrl||null };
+    const data = { name, price: Number(price)||0, description: description??null, imageUrl: imageUrl??null };
+    if (typeof stock !== 'undefined') data.stock = Number(stock)||0;
     const created = await prisma.product.create({ data });
+    res.status(201).json({ ok: true, product: created });
+  } catch (e) {
+    console.error('ADMIN_CREATE_PRODUCT_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
     res.status(201).json({ ok: true, product: created });
   } catch (e) {
     console.error('ADMIN_PRODUCT_CREATE_ERR', e);
@@ -537,6 +544,192 @@ app.get('/api/products', async (_req, res) => {
   } catch (e) {
     console.error('PRODUCTS_ERR', e);
     res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+// ---- CART HELPERS ----
+function getCartId(req, res) {
+  let cartId = req.cookies.cartId;
+  if (!cartId) {
+    cartId = crypto.randomUUID();
+    res.cookie('cartId', cartId, { httpOnly: true, sameSite: 'lax', maxAge: 30*24*3600*1000 });
+  }
+  return cartId;
+}
+
+async function ensureCart(req, res) {
+  const cartId = getCartId(req, res);
+  let cart = await prisma.cart.findUnique({ where: { id: cartId } });
+  if (!cart) cart = await prisma.cart.create({ data: { id: cartId } });
+  return cart;
+}
+
+// ---- CART ROUTES ----
+app.get('/api/cart', async (req, res) => {
+  try {
+    const cartId = getCartId(req, res);
+    const cart = await prisma.cart.findUnique({
+      where: { id: cartId },
+      include: { items: { include: { product: true } } }
+    });
+    return res.json({ ok: true, cartId, items: cart?.items || [] });
+  } catch (e) {
+    console.error('CART_GET_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+app.post('/api/cart/items', async (req, res) => {
+  try {
+    const { productId, qty } = req.body || {};
+    if (!productId || !qty) return res.status(400).json({ ok:false, message:'Missing productId/qty' });
+    const product = await prisma.product.findUnique({ where: { id: Number(productId) } });
+    if (!product) return res.status(404).json({ ok:false, message:'Product not found' });
+    const cart = await ensureCart(req, res);
+    const existing = await prisma.cartItem.findFirst({ where: { cartId: cart.id, productId: product.id } });
+    let item;
+    if (existing) {
+      item = await prisma.cartItem.update({ where: { id: existing.id }, data: { qty: existing.qty + Number(qty) } });
+    } else {
+      item = await prisma.cartItem.create({ data: { cartId: cart.id, productId: product.id, qty: Number(qty) } });
+    }
+    return res.status(201).json({ ok:true, item });
+  } catch (e) {
+    console.error('CART_ADD_ERR', e);
+    res.status(500).json({ ok:false, message:e.message });
+  }
+});
+
+app.put('/api/cart/items/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { qty } = req.body || {};
+    const updated = await prisma.cartItem.update({ where: { id }, data: { qty: Number(qty)||1 } });
+    res.json({ ok:true, item: updated });
+  } catch (e) {
+    console.error('CART_PUT_ERR', e);
+    res.status(500).json({ ok:false, message:e.message });
+  }
+});
+
+app.delete('/api/cart/items/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await prisma.cartItem.delete({ where: { id } });
+    res.json({ ok:true });
+  } catch (e) {
+    console.error('CART_DEL_ERR', e);
+    res.status(500).json({ ok:false, message:e.message });
+  }
+});
+
+// ---- CHECKOUT (summary) ----
+function calcSummary(items, promoCode) {
+  const subtotal = items.reduce((s, it)=> s + (Number(it.product?.price||it.price||0) * Number(it.qty||0)), 0);
+  const shipping = subtotal >= 500000 ? 0 : 30000;
+  let discount = 0;
+  if (promoCode && promoCode.toUpperCase() === 'SALE10') discount = Math.round(subtotal * 0.1);
+  const total = Math.max(0, subtotal + shipping - discount);
+  return { subtotal, shipping, discount, total, promo: promoCode||null };
+}
+
+app.post('/api/checkout', async (req, res) => {
+  try {
+    const { promoCode } = req.body || {};
+    const cartId = getCartId(req, res);
+    const cart = await prisma.cart.findUnique({ where: { id: cartId }, include: { items: { include: { product: true } } } });
+    const items = cart?.items || [];
+    const summary = calcSummary(items, promoCode);
+    res.json({ ok:true, cartId, items, summary });
+  } catch (e) {
+    console.error('CHECKOUT_ERR', e);
+    res.status(500).json({ ok:false, message:e.message });
+  }
+});
+
+// ---- CREATE ORDER & STRIPE SESSION ----
+app.post('/api/checkout/create-order', async (req, res) => {
+  try {
+    const { name, phone, address, provider, promoCode } = req.body || {};
+    const cartId = getCartId(req, res);
+    const cart = await prisma.cart.findUnique({ where: { id: cartId }, include: { items: { include: { product: true } } } });
+    const items = cart?.items || [];
+    if (!items.length) return res.status(400).json({ ok:false, message:'Cart empty' });
+
+    // stock check
+    for (const it of items) {
+      if (it.product && typeof it.product.stock === 'number' && it.product.stock < it.qty) {
+        return res.status(400).json({ ok:false, message:`Out of stock: ${it.product.name}` });
+      }
+    }
+    const summary = calcSummary(items, promoCode);
+
+    const order = await prisma.order.create({
+      data: {
+        status: 'PENDING',
+        cartId,
+        name: name||null, phone: phone||null, address: address||null,
+        total: summary.total,
+        items: { create: items.map(it => ({ productId: it.productId, qty: it.qty, price: it.product?.price || 0 })) }
+      },
+      include: { items: true }
+    });
+
+    if ((provider||'').toUpperCase() === 'STRIPE') {
+      const sk = process.env.STRIPE_SECRET_KEY;
+      if (!sk) return res.status(400).json({ ok:false, message:'Stripe not configured' });
+      const stripe = require('stripe')(sk);
+      const baseUrl = process.env.PUBLIC_BASE_URL || (req.headers['x-forwarded-proto']||'https') + '://' + req.headers.host;
+      const idemp = req.headers['idempotency-key'] || crypto.randomUUID();
+
+      const session = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        success_url: `${baseUrl}/api/payment/stripe/return?ok=1&orderId=${order.id}`,
+        cancel_url: `${baseUrl}/api/payment/stripe/return?ok=0&orderId=${order.id}`,
+        metadata: { orderId: String(order.id) },
+        line_items: order.items.map(it => ({
+          price_data: { currency: 'vnd', product_data: { name: `#${it.productId}` }, unit_amount: Number(it.price) },
+          quantity: it.qty
+        }))
+      }, { idempotencyKey: idemp });
+
+      await prisma.order.update({ where: { id: order.id }, data: { paymentProvider: 'STRIPE', paymentIntentId: session.id } });
+      return res.json({ ok:true, orderId: order.id, provider: 'STRIPE', sessionUrl: session.url });
+    }
+
+    // COD/default
+    return res.json({ ok:true, orderId: order.id, provider: provider||'COD' });
+  } catch (e) {
+    console.error('CREATE_ORDER_ERR', e);
+    res.status(500).json({ ok:false, message:e.message });
+  }
+});
+
+// ---- STRIPE WEBHOOK ----
+app.post('/api/payment/stripe/webhook', (req, res) => {
+  try {
+    const secret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!secret) return res.status(400).send('no secret');
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    const sig = req.headers['stripe-signature'];
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(req.rawBody, sig, secret);
+    } catch (err) {
+      console.error('WEBHOOK_VERIFY_ERR', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+    if (event.type === 'checkout.session.completed') {
+      const orderId = Number(event.data.object?.metadata?.orderId);
+      if (orderId) prisma.order.update({ where: { id: orderId }, data: { status: 'PAID' } }).catch(()=>{});
+    } else if (event.type === 'checkout.session.expired') {
+      const orderId = Number(event.data.object?.metadata?.orderId);
+      if (orderId) prisma.order.update({ where: { id: orderId }, data: { status: 'CANCELLED' } }).catch(()=>{});
+    }
+    res.json({ received: true });
+  } catch (e) {
+    console.error('WEBHOOK_ERR', e);
+    res.status(500).send('server error');
   }
 });
 // ---- EXPORT FOR VERCEL ----
