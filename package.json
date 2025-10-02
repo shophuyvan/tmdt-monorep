@@ -11,8 +11,7 @@
   },
   "scripts": {
     "fmt": "prettier -w . || true",
-    "lint": "echo \"lint placeholder\"",
-    "postinstall": "cd api && npx prisma generate"
+    "lint": "echo \"lint placeholder\""
   },
   "devDependencies": {
     "prettier": "^3.3.3"
