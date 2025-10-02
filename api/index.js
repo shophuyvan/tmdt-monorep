@@ -291,23 +291,36 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
     const id = parseInt(req.user.sub || req.user.id);
     const user = await getUserByIdSafe(id);
     return res.json({ ok: true, user });
-  } catch (e) {
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
 
 // Change password
 app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body || {};
     if (!currentPassword || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
+
+    const id = parseInt(req.user.sub || req.user.id);
+    const user = await getUserByIdSafe(id);
+    const ok = await bcrypt.compare(currentPassword, user.password);
+    if (!ok) return res.status(401).json({ ok: false, message: 'Current password invalid' });
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await prisma.adminUser.update({ where: { id }, data: { password: hashed } });
+    await prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
+    res.clearCookie('rt', { path: '/api/auth' });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('CHANGE_PW_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
 // Forgot -> send OTP (dev: log OTP if no provider configured)
 app.post('/api/auth/forgot', async (req, res) => {
   try {
     const { email } = req.body || {};
     if (!email) return res.status(400).json({ ok: false, message: 'Missing email' });
-    const user = await getUserByEmailSafe(email);
-    if (!user) return res.json({ ok: true }); // avoid user enumeration
+    // removed stray snippet
+    if (!user) return res.json({ ok: true }); // avoid enumeration
 
     await prisma.passwordReset.deleteMany({ where: { userId: user.id } }).catch(() => {});
     const code = String(Math.floor(100000 + Math.random() * 900000));
@@ -327,7 +340,7 @@ app.post('/api/auth/password/verify', async (req, res) => {
   try {
     const { email, code } = req.body || {};
     if (!email || !code) return res.status(400).json({ ok: false, message: 'Missing payload' });
-    const user = await getUserByEmailSafe(email);
+    // removed stray snippet
     if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
     const rec = await prisma.passwordReset.findFirst({
       where: { userId: user.id, consumedAt: null },
@@ -348,7 +361,73 @@ app.post('/api/auth/password/set', async (req, res) => {
   try {
     const { email, code, newPassword } = req.body || {};
     if (!email || !code || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
-    const user = await getUserByEmailSafe(email);
+    // removed stray snippet
+    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
+    const rec = await prisma.passwordReset.findFirst({
+      where: { userId: user.id, consumedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
+    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await prisma.$transaction([
+      prisma.adminUser.update({ where: { id: user.id }, data: { password: hashed } }),
+      prisma.passwordReset.update({ where: { id: rec.id }, data: { consumedAt: new Date() } }),
+      prisma.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } }),
+    ]);
+    res.clearCookie('rt', { path: '/api/auth' });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('SET_PW_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+
+  } catch (e) {
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+// Change password
+// Forgot -> send OTP (dev: log OTP if no provider configured)
+// removed stray snippet
+    if (!user) return res.json({ ok: true }); // avoid user enumeration
+
+    await prisma.passwordReset.deleteMany({ where: { userId: user.id } }).catch(() => {});
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const codeHash = hashToken(code);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await prisma.passwordReset.create({ data: { userId: user.id, codeHash, expiresAt } });
+    console.log('OTP(for dev):', email, code);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('FORGOT_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+// Verify OTP (no mutation)
+// removed stray snippet
+    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
+    const rec = await prisma.passwordReset.findFirst({
+      where: { userId: user.id, consumedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
+    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('VERIFY_CODE_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+// Set password with verified OTP
+// removed stray snippet
     if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
     const rec = await prisma.passwordReset.findFirst({
       where: { userId: user.id, consumedAt: null },
@@ -388,208 +467,3 @@ app.post('/api/auth/password/set', async (req, res) => {
     res.status(500).json({ ok: false, message: e.message });
   }
 });
-
-// Forgot -> send OTP (log if no provider configured)
-// Verify OTP (no mutation)
-// Set password with verified OTP
-const user = await getUserByEmailSafe(email);
-    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
-
-    const rec = await prisma.passwordReset.findFirst({
-      where: { userId: user.id, consumedAt: null },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
-    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
-    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
-
-    const hashed = await bcrypt.hash(newPassword, 10);
-    await prisma.$transaction([
-      prisma.adminUser.update({ where: { id: user.id }, data: { password: hashed } }),
-      prisma.passwordReset.update({ where: { id: rec.id }, data: { consumedAt: new Date() } }),
-      prisma.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } }),
-    ]);
-
-    res.clearCookie('rt', { path: '/api/auth' });
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error('SET_PW_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-    const user = await getUserByEmailSafe(email);
-    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
-    const rec = await prisma.passwordReset.findFirst({
-      where: { userId: user.id, consumedAt: null },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
-    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
-    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error('VERIFY_CODE_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-    const user = await getUserByEmailSafe(email);
-    if (!user) return res.json({ ok: true }); // tránh lộ thông tin
-
-    await prisma.passwordReset.deleteMany({ where: { userId: user.id } }).catch(() => {});
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    const codeHash = hashToken(code);
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    await prisma.passwordReset.create({ data: { userId: user.id, codeHash, expiresAt } });
-    console.log('OTP(for dev):', email, code);
-    // TODO: send via Resend/Sendgrid if key present
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error('FORGOT_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-// Reset with OTP
-app.post('/api/auth/reset', async (req, res) => {
-  try {
-    const { email, code, newPassword } = req.body || {};
-    if (!email || !code || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
-
-    const user = await getUserByEmailSafe(email);
-    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
-
-    const rec = await prisma.passwordReset.findFirst({
-      where: { userId: user.id, consumedAt: null },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
-    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
-    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
-
-    const hashed = await bcrypt.hash(newPassword, 10);
-    await prisma.$transaction([
-      prisma.adminUser.update({ where: { id: user.id }, data: { password: hashed } }),
-      prisma.passwordReset.update({ where: { id: rec.id }, data: { consumedAt: new Date() } }),
-      prisma.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } }),
-    ]);
-
-    res.clearCookie('rt', { path: '/api/auth' });
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error('RESET_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-// Login
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ ok: false, message: 'Missing payload' });
-
-    let user = null;
-    try {
-      user = await getUserByEmailSafe(email);
-    } catch (e) {
-      // schema drift: column not exist
-      if (String(e.message || '').includes('does not exist')) {
-        const rows = await rawQuery(
-          'SELECT id, email, password FROM "AdminUser" WHERE email = $1 LIMIT 1',
-          [email]
-        );
-        user = rows && rows[0] ? rows[0] : null;
-      } else {
-        throw e;
-      }
-    }
-
-    if (!user) return res.status(401).json({ ok: false, message: 'Invalid email or password' });
-    const ok = await bcrypt.compare(password, user.password);
-    if (!ok) return res.status(401).json({ ok: false, message: 'Invalid email or password' });
-
-    const accessToken = signAccess(user);
-    const jti = makeJti();
-    const refreshToken = jwt.sign({ sub: String(user.id), jti }, REFRESH_SECRET, { expiresIn: REFRESH_TTL });
-
-    try {
-      await prisma.refreshToken.create({
-        data: {
-          jti,
-          userId: user.id,
-          tokenHash: hashToken(refreshToken),
-          userAgent: req.headers['user-agent'] || null,
-          ip: (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString(),
-          expiresAt: new Date(Date.now() + (parseMsOrDays(REFRESH_TTL) || 7 * 24 * 60 * 60 * 1000)),
-        },
-      });
-    } catch (_) {}
-
-    setRtCookie(res, refreshToken);
-    return res.json({
-      ok: true,
-      accessToken,
-      user: { id: user.id, email: user.email, role: user.role || 'ADMIN' },
-    });
-  } catch (e) {
-    console.error('LOGIN_ERR', e);
-    return res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-
-
-// Admin-only: list users (RBAC demo)
-app.get('/api/admin/users', requireAuth, requireRole('ADMIN','STAFF'), async (_req, res) => {
-  try {
-    let rows;
-    try {
-      rows = await prisma.adminUser.findMany({ select: { id: true, email: true, role: true, createdAt: true }, orderBy: { id: 'asc' } });
-    } catch (e) {
-      rows = await rawQuery('SELECT id, email, COALESCE(role::text, \'USER\') AS role, "createdAt" FROM "AdminUser" ORDER BY id ASC');
-    }
-    res.json({ ok: true, users: rows });
-  } catch (e) {
-    console.error('ADMIN_USERS_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-// ---- PRODUCTS ----
-app.get('/api/products', async (_req, res) => {
-  try {
-    if (prisma.product && typeof prisma.product.findMany === 'function') {
-      const items = await prisma.product.findMany({ orderBy: { createdAt: 'desc' } });
-      return res.json({ ok: true, items });
-    }
-    const rows = await rawQuery(
-      `SELECT id, name, description, price, "imageUrl", "createdAt"
-       FROM "Product" ORDER BY "createdAt" DESC LIMIT 100`
-    );
-    if (rows) return res.json({ ok: true, items: rows });
-    return res.json({ ok: true, items: [] });
-  } catch (e) {
-    console.error('PRODUCTS_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-// (tùy chọn) stub để tránh 404 khi client gọi checkout
-app.post('/api/checkout', (_req, res) => res.status(501).json({ ok: false, message: 'Not implemented' }));
-
-
-// ---- ERROR HANDLER (last) ----
-app.use((err, req, res, _next) => {
-  const status = err.status || err.statusCode || 500;
-  const msg = err.message || 'Internal Server Error';
-  if (status >= 500) {
-    console.error('[error]', { url: req.url, method: req.method, status, msg });
-  }
-  res.status(status).json({ ok: false, error: msg });
-});
-// ---- EXPORT ----
-module.exports = (req, res) => app(req, res);
-
-// global error logs to help debugging on serverless
-process.on('unhandledRejection', err => console.error('UNHANDLED_REJECTION', err));
-process.on('uncaughtException', err => console.error('UNCAUGHT_EXCEPTION', err));
