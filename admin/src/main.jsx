@@ -3,21 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Link, useNavigate } from 'react-router-dom'
 import './index.css'
 
-// ---- simple error overlay to avoid white screen ----
-if (!window.__errorOverlayInstalled) {
-  window.__errorOverlayInstalled = true;
-  function showErr(msg) {
-    const el = document.createElement('div');
-    el.style.cssText = 'position:fixed;left:0;top:0;right:0;background:#fee;color:#900;padding:8px 12px;font:14px/1.4 ui-monospace,monospace;z-index:99999;border-bottom:1px solid #fbb';
-    el.textContent = '[UI Error] ' + msg;
-    document.body.appendChild(el);
-  }
-  window.addEventListener('error', (e)=>{ try{ showErr(e.message); }catch(_){} });
-  window.addEventListener('unhandledrejection', (e)=>{ try{ showErr(String(e.reason && e.reason.message || e.reason)); }catch(_){} });
-}
-
-
-const API = (import.meta.env && import.meta.env.VITE_API_URL) || window.__API_BASE__ || 'https://tmdt-monorep-api.vercel.app/api'
+const API = import.meta.env.VITE_API_URL
 
 function useAuth() {
   const [token, setToken] = React.useState(localStorage.getItem('token') || '')
@@ -49,7 +35,7 @@ function Login({ onLogin }) {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ email, password })
     }).then(r=>r.json())
-    if (res.ok) { onLogin(res.token); nav('/') } else alert('Đăng nhập thất bại')
+    if (res.ok) { onLogin((res.token||res.accessToken||((res.data||{}).accessToken))); nav('/') } else alert('Đăng nhập thất bại')
   }
   return (
     <div className="max-w-md mx-auto p-6">
@@ -66,7 +52,7 @@ function Login({ onLogin }) {
 function Products({ token }){
   const [items, setItems] = React.useState([])
   React.useEffect(()=>{
-    fetch(`${API}/products`).then(r=>r.json()).then(j=> setItems(j.items||[]))
+    fetch(`${API}/products`).then(r=>r.json()).then(j=> setItems((j&&j.items)||j.data||j||[]))
   },[])
   return (
     <div className="max-w-5xl mx-auto p-4 grid md:grid-cols-3 gap-3">

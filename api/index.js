@@ -12,48 +12,7 @@ const app = express();
 // ---- APP CONFIG - AUTH ----
 app.set('trust proxy', 1);
 app.use(cookieParser());
-app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf } }));
-// ---- BOOTSTRAP DB (tolerate missing columns/tables) ----
-let __booted = false;
-async function __bootstrapOnce() {
-  if (__booted) return;
-  __booted = true;
-  try {
-    // Ensure Product.stock exists
-    await prisma.$executeRawUnsafe('ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS stock integer NOT NULL DEFAULT 0');
-  } catch (e) { console.error('BOOTSTRAP_ERR', e.message); }
-}
-app.use((req, _res, next) => { __bootstrapOnce().finally(() => next()); });
-
-// ---- OBSERVABILITY: Request ID + Rate Limit ----
-const { randomUUID } = require('crypto');
-
-// Simple in-memory token bucket per IP+path (serverless instance-local)
-const RATE = { windowMs: 60_000, limit: 60 }; // 60 req/min per endpoint
-const __buckets = new Map();
-
-app.use((req, res, next) => {
-  // request id
-  const rid = req.headers['x-request-id'] || randomUUID();
-  req.rid = rid;
-  res.setHeader('x-request-id', rid);
-
-  // rate limit
-  try {
-    const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').toString().split(',')[0].trim();
-    const key = ip + '|' + req.method + '|' + req.path;
-    const now = Date.now();
-    let b = __buckets.get(key);
-    if (!b || now - b.ts > RATE.windowMs) { b = { ts: now, count: 0 }; }
-    b.count += 1;
-    __buckets.set(key, b);
-    if (b.count > RATE.limit) {
-      return res.status(429).json({ ok: false, message: 'Rate limit exceeded' });
-    }
-  } catch (e) { /* ignore */ }
-  next();
-});
-
+app.use(express.json());
 
 const ACCESS_TTL = process.env.ACCESS_TTL || '15m';
 const REFRESH_TTL = process.env.REFRESH_TTL || '7d';
@@ -97,77 +56,24 @@ async function requireAuth(req, res, next) {
   }
 }
 
-function requireRole(...roles) {
-  const allow = new Set(roles.map(r => String(r).toUpperCase()));
-  return (req, res, next) => {
-    try {
-      const role = String((req.user && (req.user.role || req.user.r)) || '').toUpperCase();
-      if (!role) return res.status(401).json({ ok: false, message: 'Unauthorized' });
-      if (!allow.has(role)) return res.status(403).json({ ok: false, message: 'Forbidden' });
-      return next();
-    } catch (e) {
-      return res.status(500).json({ ok: false, message: e.message });
-    }
-  };
-}
-
-
 // ---- RAW QUERY HELPER (handles missing delegates) ----
 async function rawQuery(sql, params = []) {
   try {
-    if (Array.isArray(params) && params.length) {
-      const esc = (v) => {
-        if (v === null || v === undefined) return 'NULL';
-        if (typeof v === 'number' || typeof v === 'bigint') return String(v);
-        if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
-        return '\'' + String(v).replace(/'/g, "''") + '\'';
-      };
-      const final = sql.replace(/\$(\d+)/g, (_, i) => esc(params[Number(i) - 1]));
-      return prisma.$queryRawUnsafe(final);
+    if (typeof prisma.$queryRawUnsafe === 'function') {
+      // support placeholders $1, $2 ... (Neon/PG)
+      if (Array.isArray(params) && params.length) {
+        // prisma.$queryRawUnsafe(sql, ...params) (Prisma >=5) – fallback: manual replace
+        return await prisma.$queryRawUnsafe(
+          sql.replace(/\$(\d+)/g, (_, i) => params[Number(i) - 1])
+        );
+      }
+      return await prisma.$queryRawUnsafe(sql);
     }
-    return prisma.$queryRawUnsafe(sql);
   } catch (e) {
     console.error('RAW_QUERY_ERR', e);
-    return null;
   }
+  return null;
 }
-
-/**
- * Prisma sometimes throws conversion errors for column 'role' (enum/text drift).
- * Fallback to raw SELECT with explicit CAST role::text.
- */
-async function getUserByEmailSafe(email) {
-  try {
-    return await prisma.adminUser.findUnique({ where: { email } });
-  } catch (e) {
-    const msg = String(e && (e.message || e.code || e.name) || '');
-    if (msg.includes('Error converting field') || msg.includes('Invalid `prisma.adminUser.findUnique()`')) {
-      const rows = await rawQuery(
-        'SELECT id, email, password, COALESCE(role::text, \'USER\') AS role FROM "AdminUser" WHERE email = $1 LIMIT 1',
-        [email]
-      );
-      return rows && rows[0] ? rows[0] : null;
-    }
-    throw e;
-  }
-}
-
-async function getUserByIdSafe(id) {
-  try {
-    return await prisma.adminUser.findUnique({ where: { id: Number(id) } });
-  } catch (e) {
-    const msg = String(e && (e.message || e.code || e.name) || '');
-    if (msg.includes('Error converting field') || msg.includes('Invalid `prisma.adminUser.findUnique()`')) {
-      const rows = await rawQuery(
-        'SELECT id, email, password, COALESCE(role::text, \'USER\') AS role FROM "AdminUser" WHERE id = $1 LIMIT 1',
-        [Number(id)]
-      );
-      return rows && rows[0] ? rows[0] : null;
-    }
-    throw e;
-  }
-}
-
 
 // ---- CORS ----
 // CHỈNH domain nếu khác
@@ -216,26 +122,6 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
-// ---- HEALTHZ (alias) ----
-app.get('/api/healthz', async (_req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({ ok: true, ts: Date.now() });
-  } catch (e) {
-    console.error('[healthz]', e);
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-app.head('/api/healthz', async (_req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.status(204).end();
-  } catch (e) {
-    console.error('[healthz:head]', e);
-    res.status(500).end();
-  }
-});
-
 // ---- INTROSPECT (debug) ----
 app.get('/__introspect', (_req, res) => {
   const hasUser = prisma && prisma.adminUser && typeof prisma.adminUser.findUnique === 'function';
@@ -243,15 +129,13 @@ app.get('/__introspect', (_req, res) => {
   res.json({ clientCreated: !!prisma, hasUser, models });
 });
 
-
 // ---- AUTH ----
-
-// Register (basic, default role USER)
+// Register
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ ok: false, message: 'Missing payload' });
-    const existed = await getUserByEmailSafe(email);
+    const existed = await prisma.adminUser.findUnique({ where: { email } });
     if (existed) return res.status(409).json({ ok: false, message: 'Email exists' });
     const hashed = await bcrypt.hash(password, 10);
     await prisma.adminUser.create({ data: { email, password: hashed, role: 'USER' } });
@@ -262,149 +146,28 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Request OTP (forgot password)
-app.post('/api/auth/forgot', async (req, res) => {
-  try {
-    const { email } = req.body || {};
-    if (!email) return res.status(400).json({ ok: false, message: 'Missing email' });
-    const user = await getUserByEmailSafe(email);
-    if (!user) return res.json({ ok: true });
-
-    await prisma.passwordReset.deleteMany({ where: { userId: user.id } }).catch(() => {});
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    const codeHash = hashToken(code);
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    await prisma.passwordReset.create({ data: { userId: user.id, codeHash, expiresAt } });
-
-    // Send via Resend if key present; otherwise log
-    try {
-      const key = process.env.RESEND_API_KEY || '';
-      if (key) {
-        const resp = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            from: process.env.RESEND_FROM || 'no-reply@tmdt.local',
-            to: [email],
-            subject: 'Your OTP code',
-            text: `Your verification code is: ${code} (valid 10 minutes)`
-          }),
-        });
-        if (!resp.ok) {
-          const t = await resp.text().catch(()=>'');
-          console.error('RESEND_ERR', resp.status, t);
-        }
-      } else {
-        console.log('OTP(for dev):', email, code);
-      }
-    } catch (e) {
-      console.error('RESEND_SEND_ERR', e);
-      console.log('OTP(for dev):', email, code);
-    }
-
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error('FORGOT_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-// Verify OTP (no mutation)
-app.post('/api/auth/password/verify', async (req, res) => {
-  try {
-    const { email, code } = req.body || {};
-    if (!email || !code) return res.status(400).json({ ok: false, message: 'Missing payload' });
-    const user = await getUserByEmailSafe(email);
-    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
-    const rec = await prisma.passwordReset.findFirst({
-      where: { userId: user.id, consumedAt: null },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
-    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
-    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error('VERIFY_CODE_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-// Set new password
-app.post('/api/auth/password/set', async (req, res) => {
-  try {
-    const { email, code, newPassword } = req.body || {};
-    if (!email || !code || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
-    const user = await getUserByEmailSafe(email);
-    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
-    const rec = await prisma.passwordReset.findFirst({
-      where: { userId: user.id, consumedAt: null },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
-    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
-    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
-
-    const hashed = await bcrypt.hash(newPassword, 10);
-    await prisma.$transaction([
-      prisma.adminUser.update({ where: { id: user.id }, data: { password: hashed } }),
-      prisma.passwordReset.update({ where: { id: rec.id }, data: { consumedAt: new Date() } }),
-      prisma.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } }),
-    ]);
-    res.clearCookie('rt', { path: '/api/auth' });
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error('SET_PW_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-// Login
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ ok: false, message: 'Missing payload' });
-
-    let user = await getUserByEmailSafe(email);
-    if (!user) return res.status(401).json({ ok: false, message: 'Invalid credentials' });
-    const ok = await bcrypt.compare(password, user.password || '');
-    if (!ok) return res.status(401).json({ ok: false, message: 'Invalid credentials' });
-
-    // issue tokens
-    const accessToken = signAccess(user);
-    const jti = makeJti();
-    const refreshToken = jwt.sign({ sub: String(user.id), jti }, REFRESH_SECRET, { expiresIn: REFRESH_TTL });
-    await prisma.refreshToken.create({
-      data: {
-        jti,
-        userId: user.id,
-        tokenHash: hashToken(refreshToken),
-        userAgent: req.headers['user-agent'] || null,
-        ip: (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString(),
-        expiresAt: new Date(Date.now() + (parseMsOrDays(REFRESH_TTL) || 7 * 24 * 60 * 60 * 1000)),
-      },
-    });
-    setRtCookie(res, refreshToken);
-    return res.json({ ok: true, accessToken, user: { id: user.id, email: user.email, role: user.role || 'ADMIN' } });
-  } catch (e) {
-    console.error('LOGIN_ERR', e);
-    return res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-// Refresh (rotation)
+// Refresh (rotate)
 app.post('/api/auth/refresh', async (req, res) => {
   try {
     const rt = req.cookies?.rt;
     if (!rt) return res.status(401).json({ ok: false, message: 'No refresh cookie' });
+
     let decoded;
-    try { decoded = jwt.verify(rt, REFRESH_SECRET); }
-    catch { return res.status(401).json({ ok: false, message: 'Invalid refresh' }); }
+    try {
+      decoded = jwt.verify(rt, REFRESH_SECRET);
+    } catch {
+      return res.status(401).json({ ok: false, message: 'Invalid refresh' });
+    }
+
     const userId = parseInt(decoded.sub || decoded.userId || decoded.id);
     const jti = decoded.jti;
     const rec = await prisma.refreshToken.findUnique({ where: { jti } }).catch(() => null);
-    if (!rec || rec.revokedAt || hashToken(rt) !== rec.tokenHash) return res.status(401).json({ ok: false, message: 'Invalid refresh' });
+    if (!rec || rec.revokedAt) return res.status(401).json({ ok: false, message: 'Refresh revoked' });
+    if (rec.expiresAt && new Date(rec.expiresAt) < new Date())
+      return res.status(401).json({ ok: false, message: 'Refresh expired' });
+    if (rec.tokenHash !== hashToken(rt)) return res.status(401).json({ ok: false, message: 'Refresh mismatch' });
 
+    // rotate
     await prisma.refreshToken.update({ where: { jti }, data: { revokedAt: new Date() } });
 
     const newJti = makeJti();
@@ -419,12 +182,33 @@ app.post('/api/auth/refresh', async (req, res) => {
         expiresAt: new Date(Date.now() + (parseMsOrDays(REFRESH_TTL) || 7 * 24 * 60 * 60 * 1000)),
       },
     });
-    const user = await getUserByIdSafe(userId);
+
     setRtCookie(res, refreshToken);
+    const user = await prisma.adminUser.findUnique({ where: { id: userId } });
     const accessToken = signAccess(user);
-    return res.json({ ok: true, accessToken, user: { id: user.id, email: user.email, role: user.role || 'ADMIN' } });
+    return res.json({ ok: true, accessToken });
   } catch (e) {
     console.error('REFRESH_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+// Logout
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    const rt = req.cookies?.rt;
+    if (rt) {
+      try {
+        const decoded = jwt.verify(rt, REFRESH_SECRET);
+        await prisma.refreshToken
+          .update({ where: { jti: decoded.jti }, data: { revokedAt: new Date() } })
+          .catch(() => {});
+      } catch {}
+    }
+    res.clearCookie('rt', { path: '/api/auth' });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('LOGOUT_ERR', e);
     res.status(500).json({ ok: false, message: e.message });
   }
 });
@@ -433,24 +217,30 @@ app.post('/api/auth/refresh', async (req, res) => {
 app.get('/api/auth/me', requireAuth, async (req, res) => {
   try {
     const id = parseInt(req.user.sub || req.user.id);
-    const user = await getUserByIdSafe(id);
-    return res.json({ ok: true, user: { id: user.id, email: user.email, role: user.role } });
+    const user = await prisma.adminUser.findUnique({
+      where: { id },
+      select: { id: true, email: true, role: true },
+    });
+    return res.json({ ok: true, user });
   } catch (e) {
     res.status(500).json({ ok: false, message: e.message });
   }
 });
 
-// Change password (authorized)
+// Change password
 app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body || {};
     if (!currentPassword || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
+
     const id = parseInt(req.user.sub || req.user.id);
-    const user = await getUserByIdSafe(id);
-    const ok = await bcrypt.compare(currentPassword, user.password || '');
+    const user = await prisma.adminUser.findUnique({ where: { id } });
+    const ok = await bcrypt.compare(currentPassword, user.password);
     if (!ok) return res.status(401).json({ ok: false, message: 'Current password invalid' });
+
     const hashed = await bcrypt.hash(newPassword, 10);
     await prisma.adminUser.update({ where: { id }, data: { password: hashed } });
+    // revoke all refresh
     await prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
     res.clearCookie('rt', { path: '/api/auth' });
     return res.json({ ok: true });
@@ -460,274 +250,140 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   }
 });
 
-// Admin-only: list users (RBAC demo)
-app.get('/api/admin/users', requireAuth, requireRole('ADMIN','STAFF'), async (_req, res) => {
+// Forgot -> send OTP (log if no provider configured)
+app.post('/api/auth/forgot', async (req, res) => {
   try {
-    let rows;
-    try {
-      rows = await prisma.adminUser.findMany({ select: { id: true, email: true, role: true, createdAt: true }, orderBy: { id: 'asc' } });
-    } catch (e) {
-      rows = await rawQuery(`SELECT id, email, COALESCE(role::text, 'USER') AS role, \"createdAt\" FROM \"AdminUser\" ORDER BY id ASC`);
-    }
-    res.json({ ok: true, users: rows });
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ ok: false, message: 'Missing email' });
+    const user = await prisma.adminUser.findUnique({ where: { email } });
+    if (!user) return res.json({ ok: true }); // tránh lộ thông tin
+
+    await prisma.passwordReset.deleteMany({ where: { userId: user.id } }).catch(() => {});
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const codeHash = hashToken(code);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await prisma.passwordReset.create({ data: { userId: user.id, codeHash, expiresAt } });
+    console.log('OTP(for dev):', email, code);
+    // TODO: send via Resend/Sendgrid if key present
+    return res.json({ ok: true });
   } catch (e) {
-    console.error('ADMIN_USERS_ERR', e);
+    console.error('FORGOT_ERR', e);
     res.status(500).json({ ok: false, message: e.message });
   }
 });
 
-
-// Admin-only: CRUD products
-app.post('/api/admin/products', requireAuth, requireRole('ADMIN','STAFF'), async (req, res) => {
+// Reset with OTP
+app.post('/api/auth/reset', async (req, res) => {
   try {
-    const { name, price, description, imageUrl, stock } = req.body || {};
-    if (!name) return res.status(400).json({ ok: false, message: 'Missing name' });
-    const data = { name, price: Number(price)||0 };
-    if (description !== undefined) data.description = description;
-    if (imageUrl !== undefined) data.imageUrl = imageUrl;
-    if (typeof stock !== 'undefined') data.stock = Number(stock)||0;
-    const created = await prisma.product.create({ data });
-    return res.status(201).json({ ok: true, product: created });
+    const { email, code, newPassword } = req.body || {};
+    if (!email || !code || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
+
+    const user = await prisma.adminUser.findUnique({ where: { email } });
+    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
+
+    const rec = await prisma.passwordReset.findFirst({
+      where: { userId: user.id, consumedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
+    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await prisma.$transaction([
+      prisma.adminUser.update({ where: { id: user.id }, data: { password: hashed } }),
+      prisma.passwordReset.update({ where: { id: rec.id }, data: { consumedAt: new Date() } }),
+      prisma.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } }),
+    ]);
+
+    res.clearCookie('rt', { path: '/api/auth' });
+    return res.json({ ok: true });
   } catch (e) {
-    console.error('ADMIN_CREATE_PRODUCT_ERR', e);
+    console.error('RESET_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+// Login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ ok: false, message: 'Missing payload' });
+
+    let user = null;
+    try {
+      user = await prisma.adminUser.findUnique({ where: { email } });
+    } catch (e) {
+      // schema drift: column not exist
+      if (String(e.message || '').includes('does not exist')) {
+        const rows = await rawQuery(
+          'SELECT id, email, password FROM "AdminUser" WHERE email = $1 LIMIT 1',
+          [email]
+        );
+        user = rows && rows[0] ? rows[0] : null;
+      } else {
+        throw e;
+      }
+    }
+
+    if (!user) return res.status(401).json({ ok: false, message: 'Invalid email or password' });
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) return res.status(401).json({ ok: false, message: 'Invalid email or password' });
+
+    const accessToken = signAccess(user);
+    const jti = makeJti();
+    const refreshToken = jwt.sign({ sub: String(user.id), jti }, REFRESH_SECRET, { expiresIn: REFRESH_TTL });
+
+    try {
+      await prisma.refreshToken.create({
+        data: {
+          jti,
+          userId: user.id,
+          tokenHash: hashToken(refreshToken),
+          userAgent: req.headers['user-agent'] || null,
+          ip: (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString(),
+          expiresAt: new Date(Date.now() + (parseMsOrDays(REFRESH_TTL) || 7 * 24 * 60 * 60 * 1000)),
+        },
+      });
+    } catch (_) {}
+
+    setRtCookie(res, refreshToken);
+    return res.json({
+      ok: true,
+      accessToken,
+      user: { id: user.id, email: user.email, role: user.role || 'ADMIN' },
+    });
+  } catch (e) {
+    console.error('LOGIN_ERR', e);
     return res.status(500).json({ ok: false, message: e.message });
   }
 });
 
-app.put('/api/admin/products/:id', requireAuth, requireRole('ADMIN','STAFF'), async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    const { name, price, description, imageUrl } = req.body || {};
-    const data = {};
-    if (name !== undefined) data.name = name;
-    if (price !== undefined) data.price = Number(price);
-    if (description !== undefined) data.description = description;
-    if (imageUrl !== undefined) data.imageUrl = imageUrl;
-    const updated = await prisma.product.update({ where: { id }, data });
-    res.json({ ok: true, product: updated });
-  } catch (e) {
-    console.error('ADMIN_PRODUCT_UPDATE_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-app.delete('/api/admin/products/:id', requireAuth, requireRole('ADMIN'), async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    await prisma.product.delete({ where: { id } });
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('ADMIN_PRODUCT_DELETE_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-
-// ---- PRODUCTS (with short cache) ----
-const __productsCache = { data: null, ts: 0, ttl: 15_000 };
-
+// ---- PRODUCTS ----
 app.get('/api/products', async (_req, res) => {
   try {
-    const now = Date.now();
-    if (__productsCache.data && now - __productsCache.ts < __productsCache.ttl) {
-      res.setHeader('Cache-Control', 'public, max-age=15');
-      return res.json({ ok: true, data: __productsCache.data, cached: true });
+    if (prisma.product && typeof prisma.product.findMany === 'function') {
+      const items = await prisma.product.findMany({ orderBy: { createdAt: 'desc' } });
+      return res.json({ ok: true, items });
     }
-    const rows = await prisma.product.findMany({ orderBy: { id: 'asc' } });
-    __productsCache.data = rows; __productsCache.ts = now;
-    res.setHeader('Cache-Control', 'public, max-age=15');
-    return res.json({ ok: true, data: rows });
+    const rows = await rawQuery(
+      `SELECT id, name, description, price, "imageUrl", "createdAt"
+       FROM "Product" ORDER BY "createdAt" DESC LIMIT 100`
+    );
+    if (rows) return res.json({ ok: true, items: rows });
+    return res.json({ ok: true, items: [] });
   } catch (e) {
     console.error('PRODUCTS_ERR', e);
     res.status(500).json({ ok: false, message: e.message });
   }
 });
 
-// ---- CART HELPERS ----
-function getCartId(req, res) {
-  let cartId = req.cookies.cartId;
-  if (!cartId) {
-    cartId = crypto.randomUUID();
-    res.cookie('cartId', cartId, { httpOnly: true, sameSite: 'lax', maxAge: 30*24*3600*1000 });
-  }
-  return cartId;
-}
+// (tùy chọn) stub để tránh 404 khi client gọi checkout
+app.post('/api/checkout', (_req, res) => res.status(501).json({ ok: false, message: 'Not implemented' }));
 
-async function ensureCart(req, res) {
-  const cartId = getCartId(req, res);
-  let cart = await prisma.cart.findUnique({ where: { id: cartId } });
-  if (!cart) cart = await prisma.cart.create({ data: { id: cartId } });
-  return cart;
-}
+// ---- EXPORT ----
+module.exports = (req, res) => app(req, res);
 
-// ---- CART ROUTES ----
-app.get('/api/cart', async (req, res) => {
-  try {
-    const cartId = getCartId(req, res);
-    const cart = await prisma.cart.findUnique({
-      where: { id: cartId },
-      include: { items: { include: { product: true } } }
-    });
-    return res.json({ ok: true, cartId, items: cart?.items || [] });
-  } catch (e) {
-    console.error('CART_GET_ERR', e);
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-app.post('/api/cart/items', async (req, res) => {
-  try {
-    const { productId, qty } = req.body || {};
-    if (!productId || !qty) return res.status(400).json({ ok:false, message:'Missing productId/qty' });
-    const product = await prisma.product.findUnique({ where: { id: Number(productId) } });
-    if (!product) return res.status(404).json({ ok:false, message:'Product not found' });
-    const cart = await ensureCart(req, res);
-    const existing = await prisma.cartItem.findFirst({ where: { cartId: cart.id, productId: product.id } });
-    let item;
-    if (existing) {
-      item = await prisma.cartItem.update({ where: { id: existing.id }, data: { qty: existing.qty + Number(qty) } });
-    } else {
-      item = await prisma.cartItem.create({ data: { cartId: cart.id, productId: product.id, qty: Number(qty) } });
-    }
-    return res.status(201).json({ ok:true, item });
-  } catch (e) {
-    console.error('CART_ADD_ERR', e);
-    res.status(500).json({ ok:false, message:e.message });
-  }
-});
-
-app.put('/api/cart/items/:id', async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    const { qty } = req.body || {};
-    const updated = await prisma.cartItem.update({ where: { id }, data: { qty: Number(qty)||1 } });
-    res.json({ ok:true, item: updated });
-  } catch (e) {
-    console.error('CART_PUT_ERR', e);
-    res.status(500).json({ ok:false, message:e.message });
-  }
-});
-
-app.delete('/api/cart/items/:id', async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    await prisma.cartItem.delete({ where: { id } });
-    res.json({ ok:true });
-  } catch (e) {
-    console.error('CART_DEL_ERR', e);
-    res.status(500).json({ ok:false, message:e.message });
-  }
-});
-
-// ---- CHECKOUT (summary) ----
-function calcSummary(items, promoCode) {
-  const subtotal = items.reduce((s, it)=> s + (Number(it.product?.price||it.price||0) * Number(it.qty||0)), 0);
-  const shipping = subtotal >= 500000 ? 0 : 30000;
-  let discount = 0;
-  if (promoCode && promoCode.toUpperCase() === 'SALE10') discount = Math.round(subtotal * 0.1);
-  const total = Math.max(0, subtotal + shipping - discount);
-  return { subtotal, shipping, discount, total, promo: promoCode||null };
-}
-
-app.post('/api/checkout', async (req, res) => {
-  try {
-    const { promoCode } = req.body || {};
-    const cartId = getCartId(req, res);
-    const cart = await prisma.cart.findUnique({ where: { id: cartId }, include: { items: { include: { product: true } } } });
-    const items = cart?.items || [];
-    const summary = calcSummary(items, promoCode);
-    res.json({ ok:true, cartId, items, summary });
-  } catch (e) {
-    console.error('CHECKOUT_ERR', e);
-    res.status(500).json({ ok:false, message:e.message });
-  }
-});
-
-// ---- CREATE ORDER & STRIPE SESSION ----
-app.post('/api/checkout/create-order', async (req, res) => {
-  try {
-    const { name, phone, address, provider, promoCode } = req.body || {};
-    const cartId = getCartId(req, res);
-    const cart = await prisma.cart.findUnique({ where: { id: cartId }, include: { items: { include: { product: true } } } });
-    const items = cart?.items || [];
-    if (!items.length) return res.status(400).json({ ok:false, message:'Cart empty' });
-
-    // stock check
-    for (const it of items) {
-      if (it.product && typeof it.product.stock === 'number' && it.product.stock < it.qty) {
-        return res.status(400).json({ ok:false, message:`Out of stock: ${it.product.name}` });
-      }
-    }
-    const summary = calcSummary(items, promoCode);
-
-    const order = await prisma.order.create({
-      data: {
-        status: 'PENDING',
-        cartId,
-        name: name||null, phone: phone||null, address: address||null,
-        total: summary.total,
-        items: { create: items.map(it => ({ productId: it.productId, qty: it.qty, price: it.product?.price || 0 })) }
-      },
-      include: { items: true }
-    });
-
-    if ((provider||'').toUpperCase() === 'STRIPE') {
-      const sk = process.env.STRIPE_SECRET_KEY;
-      if (!sk) return res.status(400).json({ ok:false, message:'Stripe not configured' });
-      const stripe = require('stripe')(sk);
-      const baseUrl = process.env.PUBLIC_BASE_URL || (req.headers['x-forwarded-proto']||'https') + '://' + req.headers.host;
-      const idemp = req.headers['idempotency-key'] || crypto.randomUUID();
-
-      const session = await stripe.checkout.sessions.create({
-        mode: 'payment',
-        success_url: `${baseUrl}/api/payment/stripe/return?ok=1&orderId=${order.id}`,
-        cancel_url: `${baseUrl}/api/payment/stripe/return?ok=0&orderId=${order.id}`,
-        metadata: { orderId: String(order.id) },
-        line_items: order.items.map(it => ({
-          price_data: { currency: 'vnd', product_data: { name: `#${it.productId}` }, unit_amount: Number(it.price) },
-          quantity: it.qty
-        }))
-      }, { idempotencyKey: idemp });
-
-      await prisma.order.update({ where: { id: order.id }, data: { paymentProvider: 'STRIPE', paymentIntentId: session.id } });
-      return res.json({ ok:true, orderId: order.id, provider: 'STRIPE', sessionUrl: session.url });
-    }
-
-    // COD/default
-    return res.json({ ok:true, orderId: order.id, provider: provider||'COD' });
-  } catch (e) {
-    console.error('CREATE_ORDER_ERR', e);
-    res.status(500).json({ ok:false, message:e.message });
-  }
-});
-
-// ---- STRIPE WEBHOOK ----
-app.post('/api/payment/stripe/webhook', (req, res) => {
-  try {
-    const secret = process.env.STRIPE_WEBHOOK_SECRET;
-    if (!secret) return res.status(400).send('no secret');
-    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-    const sig = req.headers['stripe-signature'];
-    let event;
-    try {
-      event = stripe.webhooks.constructEvent(req.rawBody, sig, secret);
-    } catch (err) {
-      console.error('WEBHOOK_VERIFY_ERR', err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-    if (event.type === 'checkout.session.completed') {
-      const orderId = Number(event.data.object?.metadata?.orderId);
-      if (orderId) prisma.order.update({ where: { id: orderId }, data: { status: 'PAID' } }).catch(()=>{});
-    } else if (event.type === 'checkout.session.expired') {
-      const orderId = Number(event.data.object?.metadata?.orderId);
-      if (orderId) prisma.order.update({ where: { id: orderId }, data: { status: 'CANCELLED' } }).catch(()=>{});
-    }
-    res.json({ received: true });
-  } catch (e) {
-    console.error('WEBHOOK_ERR', e);
-    res.status(500).send('server error');
-  }
-});
-// ---- EXPORT FOR VERCEL ----
-module.exports = app;
-exports.default = app;
+// global error logs to help debugging on serverless
+process.on('unhandledRejection', err => console.error('UNHANDLED_REJECTION', err));
+process.on('uncaughtException', err => console.error('UNCAUGHT_EXCEPTION', err));

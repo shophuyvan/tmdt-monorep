@@ -3,21 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Link, useNavigate, useParams } from 'react-router-dom'
 import './index.css'
 
-// ---- simple error overlay to avoid white screen ----
-if (!window.__errorOverlayInstalled) {
-  window.__errorOverlayInstalled = true;
-  function showErr(msg) {
-    const el = document.createElement('div');
-    el.style.cssText = 'position:fixed;left:0;top:0;right:0;background:#fee;color:#900;padding:8px 12px;font:14px/1.4 ui-monospace,monospace;z-index:99999;border-bottom:1px solid #fbb';
-    el.textContent = '[UI Error] ' + msg;
-    document.body.appendChild(el);
-  }
-  window.addEventListener('error', (e)=>{ try{ showErr(e.message); }catch(_){} });
-  window.addEventListener('unhandledrejection', (e)=>{ try{ showErr(String(e.reason && e.reason.message || e.reason)); }catch(_){} });
-}
-
-
-const API = (import.meta.env && import.meta.env.VITE_API_URL) || window.__API_BASE__ || 'https://tmdt-monorep-api.vercel.app/api'
+const API = import.meta.env.VITE_API_URL
 
 function useFetch(url, deps=[]) {
   const [data, setData] = React.useState(null)
@@ -25,7 +11,7 @@ function useFetch(url, deps=[]) {
   React.useEffect(() => {
     let mounted = true
     setLoading(true)
-    fetch(url).then(r=>r.json()).then(j=>{ if(mounted) setData(j) }).finally(()=> mounted && setLoading(false))
+    fetch(url).then(r=>r.json()).then(j=>{ if(mounted) setData( (j&&j.data!==undefined?j.data:j) ) }).finally(()=> mounted && setLoading(false))
     return () => mounted = false
   }, deps)
   return { data, loading }
