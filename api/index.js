@@ -56,6 +56,21 @@ async function requireAuth(req, res, next) {
   }
 }
 
+function requireRole(...roles) {
+  const allow = new Set(roles.map(r => String(r).toUpperCase()));
+  return (req, res, next) => {
+    try {
+      const role = String((req.user && (req.user.role || req.user.r)) || '').toUpperCase();
+      if (!role) return res.status(401).json({ ok: false, message: 'Unauthorized' });
+      if (!allow.has(role)) return res.status(403).json({ ok: false, message: 'Forbidden' });
+      return next();
+    } catch (e) {
+      return res.status(500).json({ ok: false, message: e.message });
+    }
+  };
+}
+
+
 // ---- RAW QUERY HELPER (handles missing delegates) ----
 async function rawQuery(sql, params = []) {
   try {
@@ -119,6 +134,26 @@ app.get('/api/health', async (_req, res) => {
   } catch (e) {
     console.error('HEALTH_ERR', e);
     res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ---- HEALTHZ (alias) ----
+app.get('/api/healthz', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ ok: true, ts: Date.now() });
+  } catch (e) {
+    console.error('[healthz]', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+app.head('/api/healthz', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.status(204).end();
+  } catch (e) {
+    console.error('[healthz:head]', e);
+    res.status(500).end();
   }
 });
 
@@ -255,6 +290,61 @@ app.post('/api/auth/forgot', async (req, res) => {
   try {
     const { email } = req.body || {};
     if (!email) return res.status(400).json({ ok: false, message: 'Missing email' });
+
+// Verify OTP (no mutation)
+app.post('/api/auth/password/verify', async (req, res) => {
+  try {
+    const { email, code } = req.body || {};
+    if (!email || !code) return res.status(400).json({ ok: false, message: 'Missing payload' });
+
+// Set password with verified OTP
+app.post('/api/auth/password/set', async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body || {};
+    if (!email || !code || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
+
+    const user = await prisma.adminUser.findUnique({ where: { email } });
+    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
+
+    const rec = await prisma.passwordReset.findFirst({
+      where: { userId: user.id, consumedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
+    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await prisma.$transaction([
+      prisma.adminUser.update({ where: { id: user.id }, data: { password: hashed } }),
+      prisma.passwordReset.update({ where: { id: rec.id }, data: { consumedAt: new Date() } }),
+      prisma.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } }),
+    ]);
+
+    res.clearCookie('rt', { path: '/api/auth' });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('SET_PW_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+    const user = await prisma.adminUser.findUnique({ where: { email } });
+    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
+    const rec = await prisma.passwordReset.findFirst({
+      where: { userId: user.id, consumedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
+    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('VERIFY_CODE_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
     const user = await prisma.adminUser.findUnique({ where: { email } });
     if (!user) return res.json({ ok: true }); // tránh lộ thông tin
 
@@ -359,6 +449,18 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+
+
+// Admin-only: list users (RBAC demo)
+app.get('/api/admin/users', requireAuth, requireRole('ADMIN','STAFF'), async (_req, res) => {
+  try {
+    const rows = await prisma.adminUser.findMany({ select: { id: true, email: true, role: true, createdAt: true }, orderBy: { id: 'asc' } });
+    res.json({ ok: true, users: rows });
+  } catch (e) {
+    console.error('ADMIN_USERS_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
 // ---- PRODUCTS ----
 app.get('/api/products', async (_req, res) => {
   try {
@@ -381,6 +483,16 @@ app.get('/api/products', async (_req, res) => {
 // (tùy chọn) stub để tránh 404 khi client gọi checkout
 app.post('/api/checkout', (_req, res) => res.status(501).json({ ok: false, message: 'Not implemented' }));
 
+
+// ---- ERROR HANDLER (last) ----
+app.use((err, req, res, _next) => {
+  const status = err.status || err.statusCode || 500;
+  const msg = err.message || 'Internal Server Error';
+  if (status >= 500) {
+    console.error('[error]', { url: req.url, method: req.method, status, msg });
+  }
+  res.status(status).json({ ok: false, error: msg });
+});
 // ---- EXPORT ----
 module.exports = (req, res) => app(req, res);
 
