@@ -96,7 +96,7 @@ async function rawQuery(sql, params = []) {
  */
 async function getUserByEmailSafe(email) {
   try {
-    return await getUserByEmailSafe(email);
+    return await prisma.adminUser.findUnique({ where: { email } });
   } catch (e) {
     const msg = String(e && (e.message || e.code || e.name) || '');
     if (msg.includes('Error converting field') || msg.includes('Invalid `prisma.adminUser.findUnique()`')) {
@@ -117,7 +117,7 @@ async function getUserByIdSafe(id) {
     const msg = String(e && (e.message || e.code || e.name) || '');
     if (msg.includes('Error converting field') || msg.includes('Invalid `prisma.adminUser.findUnique()`')) {
       const rows = await rawQuery(
-        'SELECT id, email, COALESCE(role::text, \'USER\') AS role FROM "AdminUser" WHERE id = $1 LIMIT 1',
+        'SELECT id, email, password, COALESCE(role::text, \'USER\') AS role FROM "AdminUser" WHERE id = $1 LIMIT 1',
         [Number(id)]
       );
       return rows && rows[0] ? rows[0] : null;
@@ -301,6 +301,76 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body || {};
     if (!currentPassword || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
+// Forgot -> send OTP (dev: log OTP if no provider configured)
+app.post('/api/auth/forgot', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ ok: false, message: 'Missing email' });
+    const user = await getUserByEmailSafe(email);
+    if (!user) return res.json({ ok: true }); // avoid user enumeration
+
+    await prisma.passwordReset.deleteMany({ where: { userId: user.id } }).catch(() => {});
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const codeHash = hashToken(code);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await prisma.passwordReset.create({ data: { userId: user.id, codeHash, expiresAt } });
+    console.log('OTP(for dev):', email, code);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('FORGOT_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+// Verify OTP (no mutation)
+app.post('/api/auth/password/verify', async (req, res) => {
+  try {
+    const { email, code } = req.body || {};
+    if (!email || !code) return res.status(400).json({ ok: false, message: 'Missing payload' });
+    const user = await getUserByEmailSafe(email);
+    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
+    const rec = await prisma.passwordReset.findFirst({
+      where: { userId: user.id, consumedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
+    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('VERIFY_CODE_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
+// Set password with verified OTP
+app.post('/api/auth/password/set', async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body || {};
+    if (!email || !code || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
+    const user = await getUserByEmailSafe(email);
+    if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
+    const rec = await prisma.passwordReset.findFirst({
+      where: { userId: user.id, consumedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!rec) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    if (new Date(rec.expiresAt) < new Date()) return res.status(400).json({ ok: false, message: 'Code expired' });
+    if (rec.codeHash !== hashToken(code)) return res.status(400).json({ ok: false, message: 'Invalid code' });
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await prisma.$transaction([
+      prisma.adminUser.update({ where: { id: user.id }, data: { password: hashed } }),
+      prisma.passwordReset.update({ where: { id: rec.id }, data: { consumedAt: new Date() } }),
+      prisma.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } }),
+    ]);
+    res.clearCookie('rt', { path: '/api/auth' });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('SET_PW_ERR', e);
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
 
     const id = parseInt(req.user.sub || req.user.id);
     const user = await getUserByIdSafe(id);
@@ -320,24 +390,9 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
 });
 
 // Forgot -> send OTP (log if no provider configured)
-app.post('/api/auth/forgot', async (req, res) => {
-  try {
-    const { email } = req.body || {};
-    if (!email) return res.status(400).json({ ok: false, message: 'Missing email' });
-
 // Verify OTP (no mutation)
-app.post('/api/auth/password/verify', async (req, res) => {
-  try {
-    const { email, code } = req.body || {};
-    if (!email || !code) return res.status(400).json({ ok: false, message: 'Missing payload' });
-
 // Set password with verified OTP
-app.post('/api/auth/password/set', async (req, res) => {
-  try {
-    const { email, code, newPassword } = req.body || {};
-    if (!email || !code || !newPassword) return res.status(400).json({ ok: false, message: 'Missing payload' });
-
-    const user = await getUserByEmailSafe(email);
+const user = await getUserByEmailSafe(email);
     if (!user) return res.status(400).json({ ok: false, message: 'Invalid' });
 
     const rec = await prisma.passwordReset.findFirst({
@@ -488,7 +543,12 @@ app.post('/api/auth/login', async (req, res) => {
 // Admin-only: list users (RBAC demo)
 app.get('/api/admin/users', requireAuth, requireRole('ADMIN','STAFF'), async (_req, res) => {
   try {
-    const rows = await prisma.adminUser.findMany({ select: { id: true, email: true, role: true, createdAt: true }, orderBy: { id: 'asc' } });
+    let rows;
+    try {
+      rows = await prisma.adminUser.findMany({ select: { id: true, email: true, role: true, createdAt: true }, orderBy: { id: 'asc' } });
+    } catch (e) {
+      rows = await rawQuery('SELECT id, email, COALESCE(role::text, \'USER\') AS role, "createdAt" FROM "AdminUser" ORDER BY id ASC');
+    }
     res.json({ ok: true, users: rows });
   } catch (e) {
     console.error('ADMIN_USERS_ERR', e);
